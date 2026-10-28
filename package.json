@@ -50,6 +50,6 @@
       "shortcutName": "SoloBand",
       "artifactName": "SoloBand Setup ${version}.${ext}"
     },
-    "publish": [{ "provider": "github", "owner": "soaresjoaomauricio", "repo": "soloband" }]
+    "publish": [{ "provider": "github", "owner": "soaresjoaomauricio", "repo": "soloband", "releaseType": "release" }]
   }
 }
