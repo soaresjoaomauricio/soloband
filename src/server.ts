@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { z, ZodError } from 'zod';
 import { readConfig, writeConfig } from './config';
 import type { Paths } from './paths';
-import { installSeparator, separatorStatus } from './separator';
+import { installSeparator, removeSeparator, separatorStatus } from './separator';
 import { AppError, attachTab, CreateSong, createSong, getSong, listSongs, loadScore, retireSong, TAB_RE, tabPath, tabTracks, TAKE_KINDS, updateSong, UpdateSong } from './songs';
 import { autoAlign, fixStale, nudgeTake, resetTake, saveOriginal, saveTake, songAsset, startSeparation } from './studio';
 
@@ -19,6 +19,8 @@ export interface Host {
   version: string;
   update?: { status: () => unknown; check: () => Promise<unknown>; install: () => void };
   openFolder?: (dir: string) => void;
+  /** Abre o desinstalador do Windows e fecha o app (os dados ficam). */
+  uninstall?: () => boolean;
   onConfigChange?: () => void;
 }
 
@@ -108,6 +110,17 @@ export async function buildServer(p: Paths, host: Host = { version: '0.0.0' }): 
 
   app.get('/api/separator', async () => separatorStatus(p));
   app.post('/api/separator/install', async () => installSeparator(p));
+  app.post('/api/separator/remove', async () => {
+    try {
+      return removeSeparator(p);
+    } catch (e) {
+      throw new AppError(409, (e as Error).message);
+    }
+  });
+  app.post('/api/uninstall', async () => {
+    if (!host.uninstall?.()) throw new AppError(400, 'Aqui não tem desinstalador (modo de desenvolvimento). Usa "Adicionar ou remover programas" do Windows.');
+    return { ok: true };
+  });
 
   app.get('/api/config', async () => ({ ...readConfig(p), data_dir: p.data, version: host.version }));
   app.put('/api/config', async (req) => {

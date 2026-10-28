@@ -74,6 +74,21 @@ describe('estúdio', () => {
     expect((await app.inject({ method: 'GET', url: '/api/songs/teste/files/..%2F..%2Fconfig.json' })).statusCode).toBe(404);
   });
 
+  it('remover o separador apaga só a pasta dele, nunca as músicas', async () => {
+    await json('POST', '/api/songs', { title: 'Teste' });
+    fs.mkdirSync(path.join(dir, 'separador', 'venv'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'separador', 'instalado.json'), '{}');
+    expect((await app.inject({ method: 'POST', url: '/api/separator/remove' })).json()).toMatchObject({ installed: false });
+    expect(fs.existsSync(path.join(dir, 'separador'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'musicas', 'teste', 'musica.json'))).toBe(true);
+  });
+
+  it('desinstalar no modo dev explica que não tem desinstalador', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/uninstall' });
+    expect(r.statusCode).toBe(400);
+    expect(r.json().error).toContain('Adicionar ou remover programas');
+  });
+
   it('separador: sem instalar, diz que não tá instalado', async () => {
     expect((await app.inject({ method: 'GET', url: '/api/separator' })).json()).toMatchObject({ installed: false, installing: false });
   });

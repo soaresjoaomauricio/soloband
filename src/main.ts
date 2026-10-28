@@ -2,6 +2,7 @@
 // abre a janela nele, vigia a pasta de tabs e cuida da atualização pelo GitHub Releases.
 import { app, BrowserWindow, nativeTheme, session, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -70,6 +71,14 @@ async function boot(): Promise<void> {
     version: app.getVersion(),
     update: { status: () => update, check: checkUpdate, install: () => autoUpdater.quitAndInstall() },
     openFolder: (dir) => void shell.openPath(dir),
+    // O desinstalador do NSIS fica do lado do .exe. Não apaga %APPDATA%\SoloBand: músicas e gravações ficam.
+    uninstall: () => {
+      const exe = path.join(path.dirname(process.execPath), 'Uninstall SoloBand.exe');
+      if (!app.isPackaged || !fs.existsSync(exe)) return false;
+      spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+      setTimeout(() => app.quit(), 300);
+      return true;
+    },
     onConfigChange: startWatch,
   });
   await server.listen({ port: 0, host: '127.0.0.1' });

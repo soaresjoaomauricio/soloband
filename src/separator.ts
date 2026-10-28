@@ -60,6 +60,17 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<void>
   });
 }
 
+/**
+ * Tira o separador (a pasta separador\ inteira: Python, PyTorch, Demucs). Libera 1 a 3 GB.
+ * Não mexe em música nem gravação: as faixas já separadas continuam funcionando.
+ */
+export function removeSeparator(p: Paths): SeparatorStatus {
+  if (state.installing) throw new Error('Espera a instalação terminar antes de remover.');
+  fs.rmSync(p.separator, { recursive: true, force: true });
+  Object.assign(state, { step: null, error: null, log: '' });
+  return separatorStatus(p);
+}
+
 /** Instala em segundo plano; a tela pergunta o status. */
 export function installSeparator(p: Paths): SeparatorStatus {
   if (state.installing) return separatorStatus(p);

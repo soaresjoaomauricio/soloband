@@ -144,7 +144,9 @@ async function settingsView() {
   const [cfg, sep, upd] = await Promise.all([api('/api/config'), api('/api/separator'), api('/api/update')]);
   const sepHtml = (st) =>
     st.installed
-      ? `<p>✅ Separador instalado${st.gpu === true ? ' (usando a placa NVIDIA)' : st.gpu === false ? ' (usando o processador: separa em 1–3 min por música)' : ''}.</p>`
+      ? `<p>✅ Separador instalado${st.gpu === true ? ' (usando a placa NVIDIA)' : st.gpu === false ? ' (usando o processador: separa em 1–3 min por música)' : ''}.</p>
+         <button id="sep-remove" class="btn">Remover o separador</button>
+         <p class="muted">Libera de 1 a 3 GB. As músicas que já foram separadas continuam funcionando; só não separa MP3 novo até baixar de novo.</p>`
       : st.installing
         ? `<p><b>Instalando…</b> ${esc(st.step ?? '')}</p><pre class="log">${esc(st.log.split('\n').slice(-6).join('\n'))}</pre>`
         : `<p>Sem o separador, o app usa o som do Guitar Pro. Com ele, separa o MP3 de verdade.</p>
@@ -182,6 +184,26 @@ async function settingsView() {
         }
       }, 2000);
     }
+    document.getElementById('sep-remove')?.addEventListener('click', async () => {
+      if (!confirm('Remover o separador? Libera de 1 a 3 GB. As músicas já separadas continuam funcionando, e dá pra baixar de novo quando quiser.')) return;
+      try {
+        await send('/api/separator/remove', 'POST');
+        toast('Separador removido.');
+        render();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+    document.getElementById('app-uninstall')?.addEventListener('click', async () => {
+      if (!confirm(`Desinstalar o SoloBand?
+
+Tuas músicas e gravações NÃO são apagadas: ficam em ${cfg.data_dir}. Se instalar de novo, tá tudo lá.`)) return;
+      try {
+        await send('/api/uninstall', 'POST');
+      } catch (err) {
+        toast(err.message);
+      }
+    });
     document.getElementById('upd-check')?.addEventListener('click', async () => {
       await send('/api/update/check', 'POST');
       render();
@@ -203,7 +225,10 @@ async function settingsView() {
       <div><button class="btn" data-open="data">Abrir a pasta</button></div></div>
     <h2>Versão</h2>
     <div class="card cfg-row"><p>SoloBand ${esc(cfg.version)} <span class="muted">${esc(updText[upd.state] ?? '')}</span></p>
-      <div>${upd.state === 'ready' ? '<button id="upd-install" class="btn primary">Reiniciar e atualizar</button>' : upd.state === 'dev' ? '' : '<button id="upd-check" class="btn">Procurar atualização</button>'}</div></div>`;
+      <div>${upd.state === 'ready' ? '<button id="upd-install" class="btn primary">Reiniciar e atualizar</button>' : upd.state === 'dev' ? '' : '<button id="upd-check" class="btn">Procurar atualização</button>'}</div></div>
+    <h2>Desinstalar</h2>
+    <div class="card cfg-row"><p class="muted">Tira o SoloBand do PC. Tuas músicas e gravações ficam guardadas na pasta de dados (dá pra apagar na mão depois, se quiser). Pra liberar espaço sem desinstalar, remove só o separador aqui em cima.</p>
+      <div><button id="app-uninstall" class="btn">Desinstalar o SoloBand</button></div></div>`;
 }
 
 // ---------- Estúdio (vindo do Vida de Jão): mixer, separação, tab acompanhando e gravar por cima. ----------
