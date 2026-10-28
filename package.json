@@ -1,0 +1,55 @@
+{
+  "name": "soloband",
+  "productName": "SoloBand",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Toca com a banda sem a tua parte e grava por cima. Tudo no teu PC.",
+  "author": "João (soaresjoaomauricio)",
+  "license": "UNLICENSED",
+  "main": "build/main.cjs",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "dev": "node esbuild.mjs && electron .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "icons": "node make-icons.mjs",
+    "dist": "node make-icons.mjs && node esbuild.mjs && electron-builder --win nsis",
+    "release": "node make-icons.mjs && node esbuild.mjs && electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "@coderline/alphatab": "1.8.4",
+    "@fastify/static": "^10.1.8",
+    "electron-updater": "^6.8.11",
+    "fastify": "^5.12.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@types/node": "^26.6.5",
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "build": {
+    "appId": "band.solo.soloband",
+    "productName": "SoloBand",
+    "executableName": "SoloBand",
+    "directories": { "output": "dist", "buildResources": "assets" },
+    "files": ["build/**", "public/**", "scripts/*.py", "assets/icon.png", "package.json"],
+    "asarUnpack": ["scripts/*.py"],
+    "win": { "target": "nsis", "icon": "assets/icon.png" },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SoloBand",
+      "artifactName": "SoloBand Setup ${version}.${ext}"
+    },
+    "publish": [{ "provider": "github", "owner": "soaresjoaomauricio", "repo": "soloband" }]
+  }
+}

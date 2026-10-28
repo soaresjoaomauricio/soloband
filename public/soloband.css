@@ -1,0 +1,21 @@
+/* Ajustes do SoloBand por cima do estilo herdado do Vida de Jão. */
+.new-song { display: flex; gap: 8px; flex-wrap: wrap; }
+.new-song input, .cfg-row input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; }
+.new-song input[name='title'] { flex: 2; min-width: 180px; }
+.new-song input[name='artist'] { flex: 1.5; min-width: 140px; }
+.new-song input[name='bpm'] { width: 90px; }
+.cfg-row { display: flex; flex-direction: column; gap: 10px; }
+.cfg-row input { width: 100%; }
+.cfg-row p { margin: 0; }
+.song-top { display: flex; justify-content: space-between; align-items: center; }
+pre.log { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 0.8rem; white-space: pre-wrap; max-height: 140px; overflow: auto; }
+.bad { color: var(--bad); }
+code { background: var(--bg); padding: 1px 6px; border-radius: 6px; }
+.first-time { border-color: var(--accent); }
+.help-step { display: flex; gap: 16px; align-items: flex-start; }
+.help-step h3 { margin: 2px 0 8px; font-size: 1.05rem; }
+.help-step p, .help-step ul, .help-step ol { margin: 0 0 8px; }
+.help-n { flex: none; width: 36px; height: 36px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 800; display: grid; place-items: center; }
+.help-files { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+.help-files th, .help-files td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--line); }
+.good { color: var(--good); }
