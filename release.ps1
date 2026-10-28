@@ -7,6 +7,28 @@
 param([switch]$NovoToken)
 
 $repo = 'soaresjoaomauricio/soloband'
+# Roda de qualquer pasta: o npm run release precisa estar na do projeto.
+Set-Location $PSScriptRoot
+
+# O electron-builder cria a tag no main DO GITHUB: se o commit nao subiu, a versao sai com o codigo velho
+# (foi o que aconteceu na 0.1.2). Confere antes de gastar 5 minutos gerando.
+$version = (Get-Content (Join-Path $PSScriptRoot 'package.json') -Raw | ConvertFrom-Json).version
+$branch = git rev-parse --abbrev-ref HEAD
+if ($branch -ne 'main') { Write-Host "Ta no branch '$branch'. Volta pro main (git switch main) e roda de novo."; return }
+if (git status --porcelain --untracked-files=no) { Write-Host 'Tem mudanca sem commit. Commita (ou desfaz) e roda de novo: o instalador tem que ser igual ao commit.'; return }
+git fetch -q origin main
+if ($LASTEXITCODE -ne 0) { Write-Host 'Nao consegui falar com o GitHub pelo git (git fetch falhou). Confere a internet e roda de novo.'; return }
+$ahead = [int](git rev-list --count origin/main..HEAD)
+$behind = [int](git rev-list --count HEAD..origin/main)
+if ($ahead -gt 0) { Write-Host "Tem $ahead commit(s) que nao subiram pro GitHub. Roda git push e depois este script de novo."; return }
+if ($behind -gt 0) { Write-Host "O GitHub tem $behind commit(s) que este PC nao tem. Roda git pull e depois este script de novo."; return }
+$remoteTag = git ls-remote --tags origin "refs/tags/v$version"
+if ($remoteTag -and -not $remoteTag.StartsWith((git rev-parse HEAD))) {
+  Write-Host "A v$version ja foi lancada (a tag existe no GitHub em outro commit). Sobe o version no package.json e escreve as novidades."
+  return
+}
+Write-Host "Git ok: main enviado, v$version vai sair do commit $(git rev-parse --short HEAD)."
+
 $dir = Join-Path $env:APPDATA 'SoloBand-release'
 $file = Join-Path $dir 'token.dat'
 if ($NovoToken -and (Test-Path $file)) { Remove-Item $file }
