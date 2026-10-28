@@ -51,9 +51,9 @@ Write-Host "Token ok: pode publicar no $repo."
 
 $env:GH_TOKEN = $token
 try {
-  # Tudo que o build e o envio mostram vai tambem pra distelease.log (da pra ler mesmo se a janela fechar).
+  # Tudo que o build e o envio mostram vai tambem pra dist\release.log (da pra ler mesmo se a janela fechar).
   New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot 'dist') | Out-Null
-  npm run release 2>&1 | Tee-Object -FilePath (Join-Path $PSScriptRoot 'distelease.log')
+  npm run release 2>&1 | Tee-Object -FilePath (Join-Path $PSScriptRoot 'dist\release.log')
   if ($LASTEXITCODE -eq 0) {
     if (-not $saved) {
       New-Item -ItemType Directory -Force $dir | Out-Null
