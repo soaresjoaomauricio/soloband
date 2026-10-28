@@ -1,5 +1,12 @@
 [
   {
+    "version": "0.1.3",
+    "date": "2026-10-28",
+    "items": [
+      "Corrigido: em Configurações, o **Procurar atualização** ficava parado em \"Baixando… 0%\" mesmo depois de baixar. Agora acompanha sozinho e mostra o **Reiniciar e atualizar** quando fica pronto."
+    ]
+  },
+  {
     "version": "0.1.2",
     "date": "2026-10-28",
     "items": [

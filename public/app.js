@@ -199,15 +199,17 @@ async function settingsView() {
            ${st.error ? `<p class="bad">${esc(st.error)}</p>` : ''}
            <button id="sep-install" class="btn primary">Baixar o separador</button>
            <p class="muted">Com placa NVIDIA: uns 3 GB. Sem: uns 800 MB. Fica tudo dentro da pasta de dados do SoloBand.</p>`;
-  const updText = {
-    dev: 'Modo de desenvolvimento: sem atualização.',
-    idle: '',
-    checking: 'Procurando…',
-    none: 'Tá na versão mais nova.',
-    downloading: `Baixando a versão ${upd.version ?? ''}… ${upd.percent ?? 0}%`,
-    ready: `Versão ${upd.version ?? ''} pronta.`,
-    error: `Não deu pra procurar: ${upd.error ?? ''}`,
-  };
+  // Download diferencial (só o que mudou) pode não mandar porcentagem: aí mostra só "Baixando…".
+  const updText = (u) =>
+    ({
+      dev: 'Modo de desenvolvimento: sem atualização.',
+      idle: '',
+      checking: 'Procurando…',
+      none: 'Tá na versão mais nova.',
+      downloading: `Baixando a versão ${u.version ?? ''}…${u.percent ? ` ${u.percent}%` : ''}`,
+      ready: `Versão ${u.version ?? ''} pronta.`,
+      error: `Não deu pra procurar: ${u.error ?? ''}`,
+    })[u.state] ?? '';
   setTimeout(() => {
     document.getElementById('cfg-form').onsubmit = async (e) => {
       e.preventDefault();
@@ -254,6 +256,19 @@ Tuas músicas e gravações NÃO são apagadas: ficam em ${cfg.data_dir}. Se ins
       await send('/api/update/check', 'POST');
       render();
     });
+    // Procurando/baixando: acompanha até terminar e aí redesenha (aparece o "Reiniciar e atualizar").
+    if (upd.state === 'checking' || upd.state === 'downloading') {
+      const poll = setInterval(async () => {
+        if (location.hash !== '#/config') return clearInterval(poll);
+        const st = await api('/api/update');
+        const el = document.getElementById('upd-text');
+        if (el) el.textContent = updText(st);
+        if (st.state !== 'checking' && st.state !== 'downloading') {
+          clearInterval(poll);
+          render();
+        }
+      }, 1500);
+    }
     document.getElementById('upd-install')?.addEventListener('click', () => send('/api/update/install', 'POST'));
   }, 0);
   return `
@@ -270,7 +285,7 @@ Tuas músicas e gravações NÃO são apagadas: ficam em ${cfg.data_dir}. Se ins
     <div class="card cfg-row"><p class="muted">Músicas, faixas e gravações ficam só neste PC: <code>${esc(cfg.data_dir)}</code></p>
       <div><button class="btn" data-open="data">Abrir a pasta</button></div></div>
     <h2>Versão</h2>
-    <div class="card cfg-row"><p>SoloBand ${esc(cfg.version)} <span class="muted">${esc(updText[upd.state] ?? '')}</span></p>
+    <div class="card cfg-row"><p>SoloBand ${esc(cfg.version)} <span class="muted" id="upd-text">${esc(updText(upd))}</span></p>
       <div>${upd.state === 'ready' ? '<button id="upd-install" class="btn primary">Reiniciar e atualizar</button>' : upd.state === 'dev' ? '' : '<button id="upd-check" class="btn">Procurar atualização</button>'}</div></div>
     <h2>O que mudou</h2>
     <div class="card changelog">${notes.map(notesHtml).join('')}</div>
