@@ -10,7 +10,7 @@ import { readConfig, writeConfig } from './config';
 import type { Paths } from './paths';
 import { installSeparator, removeSeparator, separatorStatus } from './separator';
 import { AppError, attachTab, CreateSong, createSong, getSong, listSongs, loadScore, retireSong, TAB_RE, tabPath, tabTracks, TAKE_KINDS, updateSong, UpdateSong } from './songs';
-import { autoAlign, fixStale, nudgeTake, resetTake, saveOriginal, saveTake, songAsset, startSeparation } from './studio';
+import { autoAlign, fixStale, isSeparating, nudgeTake, resetTake, saveOriginal, saveTake, separationLog, songAsset, startSeparation } from './studio';
 
 z.config(z.locales.pt());
 
@@ -46,15 +46,17 @@ export async function buildServer(p: Paths, host: Host = { version: '0.0.0' }): 
     const song = fixStale(p, id);
     const file = tabPath(p, song);
     const tracks = file && fs.existsSync(file) ? tabTracks(loadScore(file)) : [];
-    return { song, tab_available: tracks.length > 0, tab_tracks: tracks };
+    return { song, tab_available: tracks.length > 0, tab_tracks: tracks, separation_log: separationLog(id) };
   };
 
-  app.get('/api/songs', async () => listSongs(p));
+  app.get('/api/songs', async () => listSongs(p).map((s) => (s.separation.status === 'running' ? fixStale(p, s.id) : s)));
   app.post('/api/songs', async (req, reply) => reply.code(201).send(createSong(p, CreateSong.parse(req.body))));
   app.get('/api/songs/:id', async (req) => songView(IdParam.parse(req.params).id));
   app.patch('/api/songs/:id', async (req) => updateSong(p, IdParam.parse(req.params).id, UpdateSong.parse(req.body)));
   app.delete('/api/songs/:id', async (req) => {
-    retireSong(p, IdParam.parse(req.params).id);
+    const { id } = IdParam.parse(req.params);
+    if (isSeparating(id)) throw new AppError(409, 'Ainda tô separando as faixas dessa música. Espera terminar pra tirar da lista.');
+    retireSong(p, id);
     return { ok: true };
   });
 

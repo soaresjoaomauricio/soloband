@@ -23,3 +23,7 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; }
 .whats-new .card { max-width: 520px; width: 100%; }
 .whats-new h2 { margin-top: 0; }
 .changelog ul { margin: 0 0 12px; }
+.sep-step { margin: 8px 0 0; }
+.sep-log { margin-top: 8px; }
+.sep-log summary { cursor: pointer; color: var(--muted, inherit); font-size: 0.9rem; }
+.sep-log pre.log { margin: 6px 0 0; }

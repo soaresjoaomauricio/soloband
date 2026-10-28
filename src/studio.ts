@@ -29,6 +29,51 @@ export async function saveOriginal(p: Paths, id: string, filename: string, body:
 
 const running = new Set<string>();
 
+/** Etapa e últimas linhas do separador, por música (só em memória: é pra tela acompanhar). */
+export interface SeparationLog {
+  step: string | null;
+  lines: string[];
+}
+const logs = new Map<string, SeparationLog>();
+const LOG_LINES = 40;
+
+export function separationLog(id: string): SeparationLog | null {
+  return logs.get(id) ?? null;
+}
+
+/**
+ * Lê o stderr do separate.py linha a linha (o tqdm reescreve a linha com \r). Linhas "[soloband] ..." são a
+ * etapa; a barra do tqdm vira o progresso, contado só depois de "Separando" pra a barra de download do modelo
+ * não parecer a separação. No log, a barra fica numa linha só, atualizada.
+ */
+export function separationReader(log: SeparationLog, onProgress: (pct: number) => void) {
+  let partial = '';
+  let separating = false;
+  return (chunk: string) => {
+    const parts = (partial + chunk).split(/\r\n|\r|\n/);
+    partial = parts.pop() ?? '';
+    for (const raw of parts) {
+      const line = raw.trim();
+      if (!line) continue;
+      const step = line.match(/^\[soloband\] (.*)$/)?.[1];
+      const pct = line.match(/(\d{1,3})%\|/)?.[1];
+      if (step) {
+        log.step = step;
+        separating = step.startsWith('Separando');
+        log.lines.push(step);
+      } else if (pct) {
+        const bar = `${separating ? 'Separando' : 'Baixando'}: ${pct}%`;
+        if (/^(Separando|Baixando): \d+%$/.test(log.lines.at(-1) ?? '')) log.lines[log.lines.length - 1] = bar;
+        else log.lines.push(bar);
+        if (separating) onProgress(Number(pct));
+      } else {
+        log.lines.push(line);
+      }
+    }
+    log.lines.splice(0, Math.max(0, log.lines.length - LOG_LINES));
+  };
+}
+
 function runPython(p: Paths, script: string, args: string[]): ReturnType<typeof spawn> | null {
   const py = separatorPython(p);
   if (!py) return null;
@@ -42,49 +87,68 @@ export function startSeparation(p: Paths, id: string, log: (msg: string) => void
   if (running.has(id)) return song;
   const out = path.join(songDir(p, id), 'faixas');
   fs.mkdirSync(out, { recursive: true });
-  const save = (sep: Partial<Song['separation']>, extra: Partial<Song> = {}) => {
-    const cur = getSong(p, id);
-    return saveSong(p, { ...cur, ...extra, separation: { ...cur.separation, ...sep, updated_at: now() } });
+  const save = (sep: Partial<Song['separation']>, extra: Partial<Song> = {}): Song | null => {
+    // Roda nos eventos do processo filho: se a música sumiu, não pode virar exceção solta no Electron.
+    try {
+      const cur = getSong(p, id);
+      return saveSong(p, { ...cur, ...extra, separation: { ...cur.separation, ...sep, updated_at: now() } });
+    } catch {
+      return null;
+    }
   };
   const child = runPython(p, 'separate.py', [path.join(songDir(p, id), song.original), out]);
-  if (!child) return save({ status: 'error', error: 'O separador não tá instalado. Instala em Configurações, ou usa o som do Guitar Pro.' });
+  if (!child) return save({ status: 'error', error: 'O separador não tá instalado. Instala em Configurações, ou usa o som do Guitar Pro.' })!;
   running.add(id);
+  const sepLog: SeparationLog = { step: 'Abrindo o separador…', lines: ['Abrindo o separador…'] };
+  logs.set(id, sepLog);
   let stdout = '';
   let lastErr = '';
   let lastPct = -1;
+  const read = separationReader(sepLog, (pct) => {
+    if (pct === lastPct) return;
+    lastPct = pct;
+    save({ progress: pct });
+  });
   child.stdout!.on('data', (d) => (stdout += d));
   child.stderr!.on('data', (d: Buffer) => {
     const text = d.toString();
     lastErr = (lastErr + text).slice(-2000);
-    const pct = [...text.matchAll(/(\d{1,3})%\|/g)].pop()?.[1];
-    if (pct && Number(pct) !== lastPct) {
-      lastPct = Number(pct);
-      save({ progress: lastPct });
-    }
+    read(text);
   });
   child.on('close', (code) => {
     running.delete(id);
+    read('\n');
+    sepLog.step = code === 0 ? 'Pronto!' : null;
+    sepLog.lines.push(code === 0 ? 'Pronto!' : `O separador parou (código ${code}).`);
     if (code === 0) {
       let info: { device?: string } = {};
       try {
         info = JSON.parse(stdout.trim().split('\n').pop() ?? '{}');
       } catch {}
       const stems = STEMS.filter((s) => fs.existsSync(path.join(out, `${s}.flac`)));
-      save({ status: 'done', progress: 100, error: null, device: info.device ?? null }, { stems });
+      const done = save({ status: 'done', progress: 100, error: null, device: info.device ?? null }, { stems });
       log(`faixas separadas: ${id} (${info.device})`);
       // Já tenta achar sozinho onde a tab começa no MP3.
-      if (getSong(p, id).tab_file) void autoAlign(p, id).catch(() => {});
+      if (done?.tab_file) void autoAlign(p, id).catch(() => {});
     } else {
-      const reason = lastErr.trim().split('\n').filter(Boolean).pop() ?? `código ${code}`;
-      save({ status: 'error', error: `A separação falhou: ${reason}` });
+      // O separate.py avisa "Erro: ..." em português quando sabe o motivo; senão vai a última linha técnica.
+      const known = sepLog.lines.findLast((l) => l.startsWith('Erro: '))?.slice(6);
+      const reason = known ?? lastErr.trim().split(/\r?\n/).filter(Boolean).pop() ?? `código ${code}`;
+      save({ status: 'error', error: known ? `A separação falhou: ${known}` : `A separação falhou: ${reason}` });
       log(`separação falhou (${id}): ${lastErr}`);
     }
   });
   child.on('error', (e) => {
     running.delete(id);
+    sepLog.step = null;
+    sepLog.lines.push(`Não consegui abrir o separador: ${e.message}`);
     save({ status: 'error', error: `Não consegui rodar o separador: ${e.message}` });
   });
-  return save({ status: 'running', progress: 0, error: null });
+  return save({ status: 'running', progress: 0, error: null })!;
+}
+
+export function isSeparating(id: string): boolean {
+  return running.has(id);
 }
 
 /** Se o app fechou no meio de uma separação, ela não tá mais rodando. */

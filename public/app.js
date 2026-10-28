@@ -41,13 +41,28 @@ function studioData(raw) {
     tab_tracks: raw.tab_tracks.map((t) => t.name),
     tab_track: guitar?.index ?? 0,
     state: s,
+    sep_log: raw.separation_log,
   };
 }
 
 // ---------- Músicas ----------
 
+let listPoll = null; // a lista se atualiza sozinha enquanto alguma música tá separando
+
 async function songsView() {
   const songs = await api('/api/songs');
+  clearInterval(listPoll);
+  if (songs.some((s) => s.separation.status === 'running')) {
+    const here = location.hash;
+    const poll = (listPoll = setInterval(async () => {
+      if (location.hash !== here) return clearInterval(poll);
+      const now = await api('/api/songs');
+      if (!now.some((s) => s.separation.status === 'running')) {
+        clearInterval(poll);
+        render();
+      }
+    }, 3000));
+  }
   const row = (s) => {
     const sound = s.stems.length ? '🎧 MP3 separado' : s.separation.status === 'running' ? 'separando…' : s.original ? 'MP3 sem separar' : 'sem MP3';
     const takes = Object.entries(s.takes)
@@ -670,11 +685,12 @@ async function mountStudioTab(songId, box, mixer, getOffset, trackIndex) {
 }
 
 let studioSession = null; // { mixer, recorder, slug } da tela aberta; fecha ao sair
+let sepPoll = null; // acompanhamento da separação: um só, mesmo se a tela redesenhar no meio
 
 function closeStudio() {
+  clearInterval(sepPoll);
   if (!studioSession) return;
   clearInterval(studioSession.timer);
-  clearInterval(studioSession.poll);
   studioSession.tab?.destroy();
   studioSession.recorder?.close();
   studioSession.mixer?.close();
@@ -717,16 +733,21 @@ async function studioSongView(ref) {
   const wanted = studioPrefs(s.url_slug).source;
   const source = has[wanted] ? wanted : has.mp3 ? 'mp3' : has.gp ? 'gp' : null;
   const fileInput = '<input id="st-file" type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,audio/*" hidden>';
+  // Log do separador (o que ele tá fazendo, ou onde parou), fechado por padrão.
+  const sepLog = d.sep_log?.lines.length
+    ? `<details class="sep-log"><summary>Ver log</summary><pre class="log" id="st-log">${esc(d.sep_log.lines.join('\n'))}</pre></details>`
+    : '';
   const mp3Card = !state.original
     ? `<div class="card studio-source">
          <p><b>Põe o MP3 da música</b> (ou m4a do iTunes, wav, flac: a tua cópia). O app separa voz, guitarras, baixo e bateria sozinho, em menos de 1 minuto.</p>
          <label class="btn primary file-btn">Escolher arquivo${fileInput}</label>
        </div>`
     : sep.status === 'running'
-      ? `<div class="card studio-source"><p><b>Separando as faixas do MP3…</b> <span id="st-progress">${sep.progress}%</span></p><div class="bar"><span id="st-bar" style="width:${sep.progress}%"></span></div></div>`
+      ? `<div class="card studio-source"><p><b>Separando as faixas do MP3…</b> <span id="st-progress">${sep.progress}%</span></p><div class="bar"><span id="st-bar" style="width:${sep.progress}%"></span></div>
+           <p class="muted sep-step" id="st-step">${esc(d.sep_log?.step ?? 'Abrindo o separador…')}</p>${sepLog || '<details class="sep-log"><summary>Ver log</summary><pre class="log" id="st-log"></pre></details>'}</div>`
       : sep.status === 'error'
         ? `<div class="card studio-source"><p><b>Não deu pra separar o MP3.</b> ${esc(sep.error ?? '')}</p>
-             <p><button id="st-retry" class="btn">Tentar de novo</button> <label class="btn file-btn">Trocar o MP3${fileInput}</label></p></div>`
+             <p><button id="st-retry" class="btn">Tentar de novo</button> <label class="btn file-btn">Trocar o MP3${fileInput}</label></p>${sepLog}</div>`
         : `<p class="muted studio-src-line">MP3 separado em faixas pelo Demucs${sep.device === 'cuda' ? ' (GPU)' : ''}. <label class="link-btn file-btn">Trocar o MP3${fileInput}</label></p>`;
   const sourcePicker = `
     <div class="seg" role="group" aria-label="Som da banda">
@@ -797,19 +818,30 @@ function wireStudioSource(d) {
     await fetch(`/api/songs/${encodeURIComponent(slug)}/separate`, { method: 'POST' });
     render();
   });
+  clearInterval(sepPoll);
   if (d.state.separation.status === 'running') {
-    const poll = setInterval(async () => {
-      if (!location.hash.startsWith(`#/musica/${slug}`)) return clearInterval(poll);
-      const st = (await api(`/api/songs/${encodeURIComponent(slug)}`)).state;
+    const poll = (sepPoll = setInterval(async () => {
+      if (location.hash !== `#/musica/${slug}`) return clearInterval(poll);
+      const now = studioData(await api(`/api/songs/${encodeURIComponent(slug)}`));
+      const st = now.state;
       const p = document.getElementById('st-progress');
       if (p) p.textContent = `${st.separation.progress}%`;
       const b = document.getElementById('st-bar');
       if (b) b.style.width = `${st.separation.progress}%`;
+      const stepEl = document.getElementById('st-step');
+      if (stepEl && now.sep_log?.step) stepEl.textContent = now.sep_log.step;
+      const logEl = document.getElementById('st-log');
+      if (logEl && now.sep_log) {
+        // Só desce sozinho se a pessoa já tava lendo o fim do log.
+        const atEnd = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+        logEl.textContent = now.sep_log.lines.join('\n');
+        if (atEnd) logEl.scrollTop = logEl.scrollHeight;
+      }
       if (st.separation.status !== 'running') {
         clearInterval(poll);
         render();
       }
-    }, 1500);
+    }, 1500));
   }
 }
 

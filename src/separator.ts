@@ -106,6 +106,9 @@ export function installSeparator(p: Paths): SeparatorStatus {
       await run(uv, ['cache', 'clean'], env);
       state.step = 'Testando…';
       await run(venvPy(p), ['-c', 'import torch, demucs, soundfile; print(torch.cuda.is_available())'], {});
+      // O modelo vem agora, enquanto tem internet: separar depois funciona offline (ensaio sem Wi-Fi).
+      state.step = 'Baixando o modelo de separação (uns 55 MB)…';
+      await run(venvPy(p), ['-c', "from demucs.pretrained import get_model; get_model('htdemucs_6s')"], { TQDM_POSITION: '-1' });
       fs.writeFileSync(okFile(p), JSON.stringify({ gpu: state.gpu, uv: UV_VERSION, at: new Date().toISOString() }));
       state.step = 'Pronto!';
     } catch (e) {

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.1.2",
+    "date": "2026-10-28",
+    "items": [
+      "Corrigido: a separação do MP3 **ficava parada em 0%** na tela (ela terminava, mas a tela não sabia).",
+      "Separando: agora mostra **a barra andando, o que tá fazendo** (carregando, separando na tua placa, salvando cada faixa) e um **Ver log**.",
+      "O separador baixa o modelo já na instalação, então **separar funciona sem internet**. Se faltar internet na 1ª vez, ele avisa direitinho.",
+      "A lista de músicas se atualiza sozinha enquanto separa, e não dá mais pra apagar uma música no meio da separação."
+    ]
+  },
+  {
     "version": "0.1.1",
     "date": "2026-10-28",
     "items": [

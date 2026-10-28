@@ -94,6 +94,16 @@ describe('estúdio', () => {
   });
 });
 
+describe('separação que parou no meio', () => {
+  it('a lista não fica "separando…" pra sempre se o app fechou no meio', async () => {
+    const song = (await json('POST', '/api/songs', { title: 'Meio' })).json();
+    const file = path.join(dir, 'musicas', song.id, 'musica.json');
+    fs.writeFileSync(file, JSON.stringify({ ...song, separation: { ...song.separation, status: 'running', progress: 40 } }));
+    const listed = (await app.inject({ method: 'GET', url: '/api/songs' })).json();
+    expect(listed[0].separation).toMatchObject({ status: 'error', error: expect.stringContaining('parou no meio') });
+  });
+});
+
 describe.skipIf(!fs.existsSync(SAMPLE_GP))('Guitar Pro', () => {
   it('põe o .gp na música, preenche o BPM e mostra as faixas com o instrumento de cada uma', async () => {
     await json('POST', '/api/songs', { title: 'Ela Vai Voltar' });
