@@ -138,10 +138,41 @@ async function helpView() {
     </div>`;
 }
 
+// ---------- Novidades ----------
+
+// O que mudou em cada versão (public/novidades.json). Aparece uma vez quando abre uma versão nova.
+const bold = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+const notesHtml = (n) => `<p class="muted">Versão ${esc(n.version)} · ${esc(n.date.split('-').reverse().join('/'))}</p><ul>${n.items.map((i) => `<li>${bold(i)}</li>`).join('')}</ul>`;
+
+async function showWhatsNew() {
+  let seen = null;
+  try {
+    seen = localStorage.getItem('soloband.seenVersion');
+  } catch {}
+  const [{ version }, notes] = await Promise.all([api('/api/config'), fetch('/novidades.json').then((r) => r.json())]);
+  const markSeen = () => {
+    try {
+      localStorage.setItem('soloband.seenVersion', version);
+    } catch {}
+  };
+  // Primeira vez no app: nada de novidade (é tudo novo); só lembra a versão.
+  if (!seen) return markSeen();
+  if (seen === version) return;
+  const news = notes.filter((n) => n.version.localeCompare(seen, undefined, { numeric: true }) > 0);
+  markSeen();
+  if (!news.length) return;
+  const box = document.createElement('div');
+  box.className = 'whats-new';
+  box.innerHTML = `<div class="card"><h2>🎉 Novidades da ${esc(version)}</h2>${news.map(notesHtml).join('')}<button class="btn primary">Beleza</button></div>`;
+  box.querySelector('button').onclick = () => box.remove();
+  box.onclick = (e) => e.target === box && box.remove();
+  document.body.appendChild(box);
+}
+
 // ---------- Configurações ----------
 
 async function settingsView() {
-  const [cfg, sep, upd] = await Promise.all([api('/api/config'), api('/api/separator'), api('/api/update')]);
+  const [cfg, sep, upd, notes] = await Promise.all([api('/api/config'), api('/api/separator'), api('/api/update'), fetch('/novidades.json').then((r) => r.json())]);
   const sepHtml = (st) =>
     st.installed
       ? `<p>✅ Separador instalado${st.gpu === true ? ' (usando a placa NVIDIA)' : st.gpu === false ? ' (usando o processador: separa em 1–3 min por música)' : ''}.</p>
@@ -226,6 +257,8 @@ Tuas músicas e gravações NÃO são apagadas: ficam em ${cfg.data_dir}. Se ins
     <h2>Versão</h2>
     <div class="card cfg-row"><p>SoloBand ${esc(cfg.version)} <span class="muted">${esc(updText[upd.state] ?? '')}</span></p>
       <div>${upd.state === 'ready' ? '<button id="upd-install" class="btn primary">Reiniciar e atualizar</button>' : upd.state === 'dev' ? '' : '<button id="upd-check" class="btn">Procurar atualização</button>'}</div></div>
+    <h2>O que mudou</h2>
+    <div class="card changelog">${notes.map(notesHtml).join('')}</div>
     <h2>Desinstalar</h2>
     <div class="card cfg-row"><p class="muted">Tira o SoloBand do PC. Tuas músicas e gravações ficam guardadas na pasta de dados (dá pra apagar na mão depois, se quiser). Pra liberar espaço sem desinstalar, remove só o separador aqui em cima.</p>
       <div><button id="app-uninstall" class="btn">Desinstalar o SoloBand</button></div></div>`;
@@ -1249,3 +1282,4 @@ async function render() {
 
 window.addEventListener('hashchange', render);
 render();
+showWhatsNew().catch(() => {});

@@ -19,3 +19,7 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; }
 .help-files { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
 .help-files th, .help-files td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--line); }
 .good { color: var(--good); }
+.whats-new { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; padding: 16px; }
+.whats-new .card { max-width: 520px; width: 100%; }
+.whats-new h2 { margin-top: 0; }
+.changelog ul { margin: 0 0 12px; }

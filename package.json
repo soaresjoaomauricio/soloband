@@ -48,7 +48,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "SoloBand",
-      "artifactName": "SoloBand Setup ${version}.${ext}"
+      "artifactName": "SoloBand-Setup-${version}.${ext}"
     },
     "publish": [{ "provider": "github", "owner": "soaresjoaomauricio", "repo": "soloband", "releaseType": "release" }]
   }

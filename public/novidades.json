@@ -1,0 +1,18 @@
+[
+  {
+    "version": "0.1.1",
+    "date": "2026-10-28",
+    "items": [
+      "Configurações: dá pra **remover o separador** (libera de 1 a 3 GB; as músicas já separadas continuam funcionando).",
+      "Configurações: **desinstalar o SoloBand** direto do app. Tuas músicas e gravações ficam guardadas.",
+      "Novidades como esta aparecem sozinhas quando o app atualiza, e ficam em Configurações → O que mudou."
+    ]
+  },
+  {
+    "version": "0.1.0",
+    "date": "2026-10-28",
+    "items": [
+      "Primeira versão: tocar junto sem a tua parte, MP3 separado em faixas, tab acompanhando, gravar por cima e Ensaio Atual."
+    ]
+  }
+]
