@@ -16,7 +16,9 @@ $h = @{ Authorization = "Bearer $token"; 'User-Agent' = 'soloband-release'; Acce
 
 Say "--- subindo arquivos da v$version"
 try {
-  $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/tags/v$version" -Headers $h
+  # Pela lista (e nao por /releases/tags/...), pra achar tambem a release em rascunho.
+  $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=30" -Headers $h | Where-Object { $_.tag_name -eq "v$version" } | Select-Object -First 1
+  if (-not $rel) { throw "nao achei a release v$version no GitHub" }
   foreach ($a in $rel.assets) {
     if ($Substituir -contains $a.name) {
       Invoke-RestMethod "https://api.github.com/repos/$repo/releases/assets/$($a.id)" -Method Delete -Headers $h | Out-Null

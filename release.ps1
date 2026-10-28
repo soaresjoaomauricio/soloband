@@ -71,20 +71,46 @@ if (-not $canWrite) {
 }
 Write-Host "Token ok: pode publicar no $repo."
 
+# Bug do electron-builder 26: o .exe e o .blockmap sobem juntos e cada um tenta CRIAR a release; um leva 422
+# ("must have a valid tag") e o build aborta no meio (aconteceu na 0.1.1, 0.1.2 e 0.1.3). Com a release ja
+# criada como RASCUNHO, os dois so sobem os arquivos nela. Rascunho o atualizador da banda nao ve; so vira
+# release de verdade no fim, depois de conferir os 3 arquivos.
+$gh = @{ Authorization = "Bearer $token"; 'User-Agent' = 'soloband-release'; Accept = 'application/vnd.github+json' }
+$tag = "v$version"
+$draft = Invoke-RestMethod "https://api.github.com/repos/$repo/releases?per_page=30" -Headers $gh | Where-Object { $_.tag_name -eq $tag } | Select-Object -First 1
+if ($draft -and -not $draft.draft) { Write-Host "A $tag ja ta publicada no GitHub. Sobe o version no package.json."; return }
+if (-not $draft) {
+  $new = @{ tag_name = $tag; target_commitish = (git rev-parse HEAD); name = $version; draft = $true } | ConvertTo-Json
+  $draft = Invoke-RestMethod "https://api.github.com/repos/$repo/releases" -Method Post -Body $new -ContentType 'application/json' -Headers $gh
+}
+Write-Host "Rascunho da $tag pronto no GitHub; gerando e subindo os arquivos..."
+
 $env:GH_TOKEN = $token
 try {
   # Tudo que o build e o envio mostram vai tambem pra dist\release.log (da pra ler mesmo se a janela fechar).
   New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot 'dist') | Out-Null
   npm run release 2>&1 | Tee-Object -FilePath (Join-Path $PSScriptRoot 'dist\release.log')
-  if ($LASTEXITCODE -eq 0) {
+  $built = $LASTEXITCODE -eq 0
+  if ($built) {
+    # So publica (tira do rascunho) se os 3 arquivos que o atualizador precisa estao la.
+    $names = @((Invoke-RestMethod "https://api.github.com/repos/$repo/releases/$($draft.id)" -Headers $gh).assets | ForEach-Object { $_.name })
+    $missing = @("SoloBand-Setup-$version.exe", "SoloBand-Setup-$version.exe.blockmap", 'latest.yml') | Where-Object { $names -notcontains $_ }
+    if ($missing) {
+      Write-Host "Faltou subir: $($missing -join ', '). A $tag ficou em RASCUNHO (a banda nao ve). Roda .\upload-release.ps1 e publica no site do GitHub."
+      $built = $false
+    } else {
+      Invoke-RestMethod "https://api.github.com/repos/$repo/releases/$($draft.id)" -Method Patch -Body '{"draft":false}' -ContentType 'application/json' -Headers $gh | Out-Null
+    }
+  }
+  if ($built) {
     if (-not $saved) {
       New-Item -ItemType Directory -Force $dir | Out-Null
       $secure | ConvertFrom-SecureString | Set-Content $file
       Write-Host "Token salvo em $file (so o teu usuario do Windows consegue abrir). Da proxima vez nao pede."
     }
     Write-Host "Publicado: https://github.com/$repo/releases/latest"
-  } else {
-    Write-Host 'O envio deu erro (olha acima). O token nao foi salvo.'
+  } elseif ($LASTEXITCODE -ne 0) {
+    Write-Host "O envio deu erro (olha acima). A $tag ficou em RASCUNHO (a banda nao ve); da pra rodar de novo."
   }
 } finally {
   Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
