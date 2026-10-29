@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.1.4",
+    "date": "2026-10-29",
+    "items": [
+      "Nova música: clica em **🎧 Escolher MP3** e o **título e o artista vêm do arquivo** (confere e corrige se precisar). No Adicionar ele já sobe e começa a separar.",
+      "**BPM sozinho:** se tu não puser, ele calcula pela bateria separada. O que tu digitar ou vier do Guitar Pro continua mandando.",
+      "Corrigido: a lista não apaga mais o que tu tava preenchendo em Nova música quando outra termina de separar."
+    ]
+  },
+  {
     "version": "0.1.3",
     "date": "2026-10-28",
     "items": [

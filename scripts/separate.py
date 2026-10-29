@@ -5,6 +5,7 @@ import json
 import os
 import sys
 
+import numpy as np
 import soundfile as sf
 import torch
 from demucs.apply import apply_model
@@ -37,6 +38,32 @@ def load_model():
         sys.exit(2)
 
 
+def estimate_bpm(drums: torch.Tensor, sr: int) -> float | None:
+    # Ataques da bateria (fluxo espectral) -> autocorrelação -> período mais forte entre 50 e 220 BPM, com leve
+    # preferência por ~120 pra não cair no dobro/metade. Testado: Ela Vai Voltar 105,1 (GP: 105); Snow 105,6 (105).
+    mono = drums.float().mean(0).cpu()
+    hop = 512
+    spec = torch.stft(mono, n_fft=2048, hop_length=hop, window=torch.hann_window(2048), return_complex=True).abs()
+    spec = torch.log1p(100 * spec)
+    flux = torch.clamp(spec[:, 1:] - spec[:, :-1], min=0).sum(0).numpy()
+    if flux.size < 100 or not flux.any():
+        return None
+    flux = flux - flux.mean()
+    fps = sr / hop
+    n = 1 << int(np.ceil(np.log2(2 * flux.size)))
+    f = np.fft.rfft(flux, n)
+    ac = np.fft.irfft(f * np.conj(f))[: flux.size]
+    lags = np.arange(int(fps * 60 / 220), int(fps * 60 / 50) + 1)
+    bpms = 60 * fps / lags
+    score = ac[lags] * np.exp(-0.5 * (np.log2(bpms / 120) / 0.9) ** 2)
+    i = int(np.argmax(score))
+    if 0 < i < len(lags) - 1:  # refina entre dois quadros
+        a, b, c = ac[lags[i] - 1], ac[lags[i]], ac[lags[i] + 1]
+        den = a - 2 * b + c
+        return 60 * fps / (lags[i] + (0.5 * (a - c) / den if den else 0))
+    return float(bpms[i])
+
+
 def main() -> None:
     src, out_dir = sys.argv[1], sys.argv[2]
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,7 +86,18 @@ def main() -> None:
     for name, stem in zip(model.sources, stems):
         step(f"Salvando a faixa {name}…")
         sf.write(f"{out_dir}/{name}.flac", stem.cpu().numpy().T, model.samplerate, subtype="PCM_16")
-    print(json.dumps({"stems": list(model.sources), "samplerate": model.samplerate, "device": device}))
+
+    bpm = None
+    if "drums" in model.sources:
+        step("Calculando o BPM pela bateria…")
+        try:
+            est = estimate_bpm(stems[model.sources.index("drums")], model.samplerate)
+            bpm = round(est) if est else None
+        except Exception as exc:  # BPM é só um palpite: não pode derrubar a separação
+            print(f"BPM: {exc!r}", file=sys.stderr, flush=True)
+        if bpm:
+            step(f"BPM estimado: {bpm}")
+    print(json.dumps({"stems": list(model.sources), "samplerate": model.samplerate, "device": device, "bpm": bpm}))
 
 
 if __name__ == "__main__":

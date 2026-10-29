@@ -121,12 +121,18 @@ export function startSeparation(p: Paths, id: string, log: (msg: string) => void
     sepLog.step = code === 0 ? 'Pronto!' : null;
     sepLog.lines.push(code === 0 ? 'Pronto!' : `O separador parou (código ${code}).`);
     if (code === 0) {
-      let info: { device?: string } = {};
+      let info: { device?: string; bpm?: number | null } = {};
       try {
         info = JSON.parse(stdout.trim().split('\n').pop() ?? '{}');
       } catch {}
       const stems = STEMS.filter((s) => fs.existsSync(path.join(out, `${s}.flac`)));
-      const done = save({ status: 'done', progress: 100, error: null, device: info.device ?? null }, { stems });
+      // BPM estimado pela bateria só entra se a música ainda não tem (o digitado ou o do Guitar Pro manda).
+      const guess = typeof info.bpm === 'number' && info.bpm >= 20 && info.bpm <= 300 ? info.bpm : null;
+      const extra: Partial<Song> = { stems };
+      try {
+        if (guess && getSong(p, id).bpm == null) extra.bpm = guess;
+      } catch {}
+      const done = save({ status: 'done', progress: 100, error: null, device: info.device ?? null }, extra);
       log(`faixas separadas: ${id} (${info.device})`);
       // Já tenta achar sozinho onde a tab começa no MP3.
       if (done?.tab_file) void autoAlign(p, id).catch(() => {});

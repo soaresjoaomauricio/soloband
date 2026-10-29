@@ -27,3 +27,4 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; }
 .sep-log { margin-top: 8px; }
 .sep-log summary { cursor: pointer; color: var(--muted, inherit); font-size: 0.9rem; }
 .sep-log pre.log { margin: 6px 0 0; }
+.new-song-file { flex-basis: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

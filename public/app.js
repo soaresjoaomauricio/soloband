@@ -47,6 +47,106 @@ function studioData(raw) {
 
 // ---------- Músicas ----------
 
+/**
+ * Título, artista e BPM das tags do arquivo (ID3 do mp3, átomos do iTunes no m4a, Vorbis comment no flac),
+ * lidos aqui mesmo, sem biblioteca. Sem tag, tenta o nome do arquivo ("Artista - Título"). BPM quase nunca vem.
+ */
+async function readSongTags(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  const ascii = (o, n) => String.fromCharCode(...buf.subarray(o, o + n));
+  const clean = (s) => (s ?? '').replace(/\0+$/g, '').replace(/\0/g, ' ').trim() || null;
+  const tags = { title: null, artist: null, bpm: null };
+
+  // ID3v2 (mp3): "ID3", versão, flags, tamanho "syncsafe" (7 bits por byte).
+  if (ascii(0, 3) === 'ID3') {
+    const ver = buf[3];
+    const syncsafe = (o) => ((buf[o] & 127) << 21) | ((buf[o + 1] & 127) << 14) | ((buf[o + 2] & 127) << 7) | (buf[o + 3] & 127);
+    const end = Math.min(buf.length, 10 + syncsafe(6));
+    const text = (o, n) => {
+      const enc = buf[o];
+      const body = buf.subarray(o + 1, o + n);
+      const dec = enc === 0 ? 'latin1' : enc === 3 ? 'utf-8' : enc === 2 ? 'utf-16be' : 'utf-16'; // 1 = UTF-16 com BOM
+      return clean(new TextDecoder(dec).decode(body));
+    };
+    const ids = ver === 2 ? { TT2: 'title', TP1: 'artist', TBP: 'bpm' } : { TIT2: 'title', TPE1: 'artist', TBPM: 'bpm' };
+    let o = 10 + (ver > 2 && buf[5] & 0x40 ? (ver === 4 ? syncsafe(10) : dv.getUint32(10) + 4) : 0); // pula o cabeçalho estendido
+    while (o + (ver === 2 ? 6 : 10) <= end) {
+      const id = ascii(o, ver === 2 ? 3 : 4);
+      if (!/^[A-Z0-9]{3,4}$/.test(id)) break;
+      const size = ver === 2 ? (buf[o + 3] << 16) | (buf[o + 4] << 8) | buf[o + 5] : ver === 4 ? syncsafe(o + 4) : dv.getUint32(o + 4);
+      const head = ver === 2 ? 6 : 10;
+      if (ids[id] && size > 1 && o + head + size <= end) tags[ids[id]] ??= text(o + head, size);
+      o += head + size;
+    }
+  }
+  // ID3v1 (fim do mp3): 128 bytes começando com "TAG".
+  if (!tags.title && buf.length > 128 && ascii(buf.length - 128, 3) === 'TAG') {
+    const latin = (o, n) => clean(new TextDecoder('latin1').decode(buf.subarray(o, o + n)));
+    tags.title = latin(buf.length - 125, 30);
+    tags.artist ??= latin(buf.length - 95, 30);
+  }
+  // m4a/mp4 (iTunes): moov > udta > meta > ilst > ©nam/©ART/tmpo > data.
+  if (ascii(4, 4) === 'ftyp') {
+    const walk = (start, end, path) => {
+      for (let o = start; o + 8 <= end; ) {
+        let size = dv.getUint32(o);
+        const type = new TextDecoder('latin1').decode(buf.subarray(o + 4, o + 8));
+        if (size === 1) size = Number(dv.getBigUint64(o + 8));
+        if (size < 8 || o + size > end) break;
+        if (['moov', 'udta', 'ilst'].includes(type)) walk(o + 8, o + size, [...path, type]);
+        else if (type === 'meta') walk(o + 12, o + size, [...path, type]); // meta tem 4 bytes de versão/flags
+        else if (path.at(-1) === 'ilst' && ['©nam', '©ART', 'tmpo'].includes(type) && ascii(o + 12, 4) === 'data') {
+          const data = buf.subarray(o + 24, o + size);
+          if (type === 'tmpo') tags.bpm ??= data.length >= 2 ? (data[0] << 8) | data[1] : null;
+          else tags[type === '©nam' ? 'title' : 'artist'] ??= clean(new TextDecoder().decode(data));
+        }
+        o += size;
+      }
+    };
+    walk(0, buf.length, []);
+  }
+  // flac: blocos de metadados; o 4 é o Vorbis comment ("TITLE=...", tamanhos em little-endian).
+  if (ascii(0, 4) === 'fLaC') {
+    for (let o = 4; o + 4 <= buf.length; ) {
+      const last = buf[o] & 0x80;
+      const type = buf[o] & 0x7f;
+      const len = (buf[o + 1] << 16) | (buf[o + 2] << 8) | buf[o + 3];
+      if (type === 4) {
+        let p = o + 4;
+        p += 4 + dv.getUint32(p, true); // fornecedor
+        const count = dv.getUint32(p, true);
+        p += 4;
+        for (let i = 0; i < count && p + 4 <= o + 4 + len; i++) {
+          const n = dv.getUint32(p, true);
+          const [k, ...v] = new TextDecoder().decode(buf.subarray(p + 4, p + 4 + n)).split('=');
+          const key = { TITLE: 'title', ARTIST: 'artist', BPM: 'bpm', TEMPO: 'bpm' }[k.toUpperCase()];
+          if (key) tags[key] ??= clean(v.join('='));
+          p += 4 + n;
+        }
+      }
+      if (last) break;
+      o += 4 + len;
+    }
+  }
+  // Sem tag: "01 - Artista - Título.mp3" / "Artista - Título.mp3" / "Título.mp3". Tira o prefixo que site de
+  // download põe ("AudioCleaner_Download_...", "y2mate.com - ...").
+  if (!tags.title) {
+    const base = file.name.replace(/\.[^.]+$/, '').replace(/^\S*?download_/i, '').replace(/^\S+\.(com|net|io|cc|to)\s*-\s*/i, '').replace(/^\d{1,3}[\s.\-_]+/, '');
+    const parts = base.split(/\s+-\s+/).map((s) => s.trim()).filter(Boolean);
+    tags.title = parts.length > 1 ? parts.slice(1).join(' - ') : parts[0] ?? null;
+    if (parts.length > 1) tags.artist ??= parts[0];
+  }
+  // "Snow (Hey Oh) - Remastered", "Música (Official Video)", "Música [Lyrics]": fica só o nome.
+  tags.title &&= tags.title
+    .replace(/\s*[([][^)\]]*\b(official|oficial|lyrics?|letra|audio|áudio|video|vídeo|clipe|hd|hq|remaster(ed)?)\b[^)\]]*[)\]]/gi, '')
+    .replace(/\s+-\s+(\d{4}\s+)?(remaster(ed)?|official|oficial|lyrics?|ao vivo|live)\b.*$/i, '')
+    .trim() || tags.title;
+  const bpm = Math.round(Number(String(tags.bpm ?? '').replace(',', '.')));
+  tags.bpm = bpm >= 20 && bpm <= 300 ? bpm : null;
+  return tags;
+}
+
 let listPoll = null; // a lista se atualiza sozinha enquanto alguma música tá separando
 
 async function songsView() {
@@ -57,10 +157,10 @@ async function songsView() {
     const poll = (listPoll = setInterval(async () => {
       if (location.hash !== here) return clearInterval(poll);
       const now = await api('/api/songs');
-      if (!now.some((s) => s.separation.status === 'running')) {
-        clearInterval(poll);
-        render();
-      }
+      // Troca só as linhas: redesenhar a tela apagaria o que a pessoa tá preenchendo em "Nova música".
+      const list = document.getElementById('setlist');
+      if (list) list.innerHTML = now.map(row).join('');
+      if (!now.some((s) => s.separation.status === 'running')) clearInterval(poll);
     }, 3000));
   }
   const row = (s) => {
@@ -73,27 +173,46 @@ async function songsView() {
       <span class="muted">${esc(s.artist)}${s.bpm ? ` · ${s.bpm} bpm` : ''} · ${sound}${s.tab_file ? ' · 🎼 Guitar Pro' : ''}${takes ? ` · Ensaio Atual: ${esc(takes)}` : ''}</span></span></a>`;
   };
   setTimeout(() => {
-    document.getElementById('new-song').onsubmit = async (e) => {
+    const form = document.getElementById('new-song');
+    // Escolher o MP3 preenche título, artista e BPM pelas tags; no "Adicionar" ele já sobe e começa a separar.
+    let audio = null;
+    document.getElementById('new-audio').onchange = async (e) => {
+      audio = e.target.files[0] ?? null;
+      document.getElementById('new-audio-name').textContent = audio ? audio.name : '';
+      if (!audio) return;
+      const tags = await readSongTags(audio).catch(() => ({}));
+      if (tags.title) form.title.value = tags.title;
+      if (tags.artist) form.artist.value = tags.artist;
+      if (tags.bpm) form.bpm.value = tags.bpm;
+      form.title.focus();
+    };
+    form.onsubmit = async (e) => {
       e.preventDefault();
-      const f = new FormData(e.target);
+      const f = new FormData(form);
+      const btn = form.querySelector('button');
+      btn.disabled = true;
       try {
         const song = await send('/api/songs', 'POST', {
           title: f.get('title'),
           artist: f.get('artist') || undefined,
           bpm: f.get('bpm') ? Number(f.get('bpm')) : undefined,
         });
+        if (audio) await uploadAudio(song.id, audio);
         location.hash = `#/musica/${song.id}`;
       } catch (err) {
         toast(err.message);
+        btn.disabled = false;
       }
     };
   }, 0);
   return `
     <h1>Músicas</h1>
     <p class="muted">Põe o MP3 (a tua cópia) e, se tiver, o Guitar Pro. O app separa voz, guitarras, baixo e bateria, e tu toca junto sem a tua parte.</p>
-    ${songs.length ? `<div class="setlist">${songs.map(row).join('')}</div>` : '<div class="card first-time"><b>Primeira vez aqui?</b> Dá uma olhada no <a href="#/ajuda">Como usar</a>: são 3 passos.</div>'}
+    ${songs.length ? `<div class="setlist" id="setlist">${songs.map(row).join('')}</div>` : '<div class="card first-time"><b>Primeira vez aqui?</b> Dá uma olhada no <a href="#/ajuda">Como usar</a>: são 3 passos.</div>'}
     <h2>Nova música</h2>
     <form id="new-song" class="card new-song">
+      <div class="new-song-file"><label class="btn file-btn">🎧 Escolher MP3<input id="new-audio" type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,audio/*" hidden></label>
+        <span class="muted" id="new-audio-name">preenche o nome e o artista sozinho; BPM vazio, ele calcula pela bateria</span></div>
       <input name="title" placeholder="Título" required>
       <input name="artist" placeholder="Artista">
       <input name="bpm" type="number" min="20" max="300" placeholder="BPM">
@@ -121,7 +240,8 @@ async function helpView() {
 
     <h2>Pra cada música</h2>
     ${step('1', 'Cadastrar a música', `
-      <p>Em <a href="#/">Músicas</a>, escreve o <b>título</b> (o artista e o BPM são opcionais) e clica em <b>Adicionar</b>.</p>`)}
+      <p>Em <a href="#/">Músicas</a>, clica em <b>🎧 Escolher MP3</b>: o título e o artista vêm do arquivo (confere e corrige se precisar). Clica em <b>Adicionar</b> e ele já começa a separar. O BPM, se tu não puser, ele calcula pela bateria.</p>
+      <p class="muted">Sem o MP3 na mão? Escreve só o título e adiciona; o arquivo dá pra pôr depois, na música.</p>`)}
     ${step('2', 'Subir os arquivos', `
       <table class="help-files">
         <tr><th>Arquivo</th><th>Precisa?</th><th>Pra quê</th></tr>
@@ -790,30 +910,38 @@ async function studioSongView(ref) {
     <div id="st-main" class="studio-main">${source ? '<p class="muted" id="st-loading">Carregando as faixas…</p>' : '<p class="empty">Sem som da banda ainda: põe o MP3 aí em cima.</p>'}</div>`;
 }
 
+/** Manda o áudio da música (já começa a separar). Devolve false se deu erro (o aviso já apareceu). */
+async function uploadAudio(slug, file) {
+  // m4a/aac (iTunes) e afins: o separador não lê, então o navegador converte pra WAV antes de mandar.
+  if (!/\.(mp3|wav|flac|ogg)$/i.test(file.name)) {
+    toast(`Convertendo ${file.name}…`);
+    try {
+      const ctx = new OfflineAudioContext(2, 1, 44100);
+      const audio = await ctx.decodeAudioData(await file.arrayBuffer());
+      const chans = [audio.getChannelData(0), audio.getChannelData(audio.numberOfChannels > 1 ? 1 : 0)];
+      file = new File([wavBlob(null, audio.sampleRate, chans)], file.name.replace(/\.[^.]+$/, '') + '.wav');
+    } catch {
+      toast('Não consegui ler esse arquivo. Tenta mp3, m4a, wav ou flac.');
+      return false;
+    }
+  }
+  toast(`Enviando ${file.name}…`);
+  const res = await fetch(`/api/songs/${encodeURIComponent(slug)}/audio`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(file.name) }, body: file });
+  const data = await res.json();
+  if (!res.ok) {
+    toast(data.error);
+    return false;
+  }
+  saveStudioPrefs(slug, { ...studioPrefs(slug), source: 'mp3' });
+  return true;
+}
+
 /** Upload do MP3 e acompanhamento da separação. */
 function wireStudioSource(d) {
   const slug = d.song.url_slug;
   document.getElementById('st-file')?.addEventListener('change', async (e) => {
-    let file = e.target.files[0];
-    if (!file) return;
-    // m4a/aac (iTunes) e afins: o separador não lê, então o navegador converte pra WAV antes de mandar.
-    if (!/\.(mp3|wav|flac|ogg)$/i.test(file.name)) {
-      toast(`Convertendo ${file.name}…`);
-      try {
-        const ctx = new OfflineAudioContext(2, 1, 44100);
-        const audio = await ctx.decodeAudioData(await file.arrayBuffer());
-        const chans = [audio.getChannelData(0), audio.getChannelData(audio.numberOfChannels > 1 ? 1 : 0)];
-        file = new File([wavBlob(null, audio.sampleRate, chans)], file.name.replace(/\.[^.]+$/, '') + '.wav');
-      } catch {
-        return toast('Não consegui ler esse arquivo. Tenta mp3, m4a, wav ou flac.');
-      }
-    }
-    toast(`Enviando ${file.name}…`);
-    const res = await fetch(`/api/songs/${encodeURIComponent(slug)}/audio`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'x-filename': encodeURIComponent(file.name) }, body: file });
-    const data = await res.json();
-    if (!res.ok) return toast(data.error);
-    saveStudioPrefs(slug, { ...studioPrefs(slug), source: 'mp3' });
-    render();
+    const file = e.target.files[0];
+    if (file && (await uploadAudio(slug, file))) render();
   });
   document.getElementById('st-gp')?.addEventListener('change', async (e) => {
     const file = e.target.files[0];
