@@ -11,6 +11,7 @@ import type { Paths } from './paths';
 import { installSeparator, removeSeparator, separatorStatus } from './separator';
 import { AppError, attachTab, CreateSong, createSong, getSong, listSongs, loadScore, retireSong, TAB_RE, tabPath, tabTracks, TAKE_KINDS, TAKE_SOURCES, updateSong, UpdateSong } from './songs';
 import { youtubeId, youtubeInfo } from './youtube';
+import { live } from './live';
 import { autoAlign, fixStale, isSeparating, nudgeTake, resetTake, saveOriginal, saveTake, separationLog, songAsset, startSeparation } from './studio';
 
 z.config(z.locales.pt());
@@ -42,6 +43,29 @@ export async function buildServer(p: Paths, host: Host = { version: '0.0.0' }): 
 
   // Arquivo chega cru no corpo e vai direto pro disco.
   app.addContentTypeParser(['application/octet-stream', 'audio/mpeg', 'audio/wav', 'audio/flac', 'audio/ogg', 'audio/x-wav'], (_req, payload, done) => done(null, payload));
+
+  // Separar ao vivo (S15): o Demucs na GPU recebe o som do YouTube em pedaços e devolve as faixas na hora.
+  // Nada vai pro disco: o áudio passa só pela memória.
+  live.setPaths(p);
+  app.get('/api/live', async () => live.status());
+  app.post('/api/live/start', async () => live.start());
+  app.post('/api/live/stop', async () => live.stop());
+  app.get('/api/live/out', async (req, reply) => {
+    const out = live.openOut();
+    req.raw.on('close', () => live.closeOut(out));
+    return reply.header('content-type', 'application/octet-stream').header('cache-control', 'no-store').send(out);
+  });
+  app.post('/api/live/in', async (req) => {
+    const start = z.coerce.number().int().min(0).parse(req.headers['x-start']);
+    if (req.headers['x-reset']) {
+      live.reset(start);
+      return { ok: true };
+    }
+    const parts: Buffer[] = [];
+    for await (const c of req.body as Readable) parts.push(c as Buffer);
+    live.write(start, Buffer.concat(parts));
+    return { ok: true };
+  });
 
   const songView = (id: string) => {
     const song = fixStale(p, id);

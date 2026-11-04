@@ -32,7 +32,8 @@ Tudo roda **no teu PC**: nada vai pra internet.
 1. Copia o link do vídeo da música no YouTube.
 2. **Músicas** → **Nova música pelo YouTube** → cola o link. O título e o artista vêm sozinhos → **Adicionar**.
 3. Pronto: **▶ Tocar**. Dá pra deixar **mais devagar** (0,5× a 1×, sem mudar o tom), **repetir um trecho** (A, B, 🔁) e **gravar por cima**.
-   _(Precisa de internet. O app não baixa nada: toca o vídeo do próprio YouTube. Só não dá pra tirar a tua parte da música; pra isso, usa o MP3 aqui embaixo.)_
+   _(Precisa de internet. O app não baixa nada: toca o vídeo do próprio YouTube.)_
+4. **Com placa de vídeo NVIDIA e o separador instalado**, a chave **✂️ Separar as faixas ao vivo** (embaixo do vídeo) separa voz, guitarras, baixo e bateria na hora, e aí dá pra tocar **sem a tua parte**. O som sai uns 3,5 s depois do vídeo. Sem NVIDIA, pra tirar a tua parte usa o MP3 aqui embaixo.
 
 ### Pôr uma música pelo MP3 (pra tocar sem a tua parte)
 1. **Músicas** → digita o **título** (e o artista, se quiser) → **Adicionar**.

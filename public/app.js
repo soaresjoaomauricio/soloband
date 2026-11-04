@@ -299,7 +299,7 @@ async function helpView() {
 
     <h2>Pra cada música</h2>
     ${step('1', 'Cadastrar a música', `
-      <p><b>Mais fácil:</b> em <a href="#/">Músicas</a>, cola o link do vídeo em <b>Nova música pelo YouTube</b> e clica em <b>Adicionar</b>. Toca na hora, sem baixar nada (precisa de internet). Dá pra tocar mais devagar (0,5× a 1×, sem mudar o tom) e repetir um trecho (A–B). Só não dá pra tirar a tua parte: pra isso é o MP3.</p>
+      <p><b>Mais fácil:</b> em <a href="#/">Músicas</a>, cola o link do vídeo em <b>Nova música pelo YouTube</b> e clica em <b>Adicionar</b>. Toca na hora, sem baixar nada (precisa de internet). Dá pra tocar mais devagar (0,5× a 1×, sem mudar o tom) e repetir um trecho (A–B). Com placa NVIDIA e o separador instalado, a chave <b>✂️ Separar as faixas ao vivo</b> separa os instrumentos na hora (o som sai uns 3,5 s depois do vídeo) e dá pra tocar sem a tua parte. Sem NVIDIA, pra isso é o MP3.</p>
       <p><b>Pra tocar sem a tua parte:</b> em <a href="#/">Músicas</a>, clica em <b>🎧 Escolher MP3</b>: o título e o artista vêm do arquivo (confere e corrige se precisar). Clica em <b>Adicionar</b> e ele já começa a separar. O BPM, se tu não puser, ele calcula pela bateria.</p>
       <p class="muted">Sem o MP3 na mão? Escreve só o título e adiciona; o arquivo dá pra pôr depois, na música.</p>`)}
     ${step('2', 'Subir os arquivos', `
@@ -627,6 +627,8 @@ function wireYtPractice(root, ctl) {
       if (loop.a === null || p <= loop.a + 0.5) return toast('Marca o A antes, e o B depois dele.');
       loop.b = p;
       loop.on = true;
+      // Já volta pro A. No ao vivo o vídeo vai 3,5 s na frente e já passou do B: sem isso, a 1ª volta passava do ponto.
+      ctl.seek(loop.a);
       show();
     }
     if (e.target.closest('[data-yt-loop]')) {
@@ -639,7 +641,7 @@ function wireYtPractice(root, ctl) {
   show();
   return {
     tick: () => {
-      if (loop.on && loop.b !== null && ctl.position() >= loop.b) ctl.seek(loop.a);
+      if (loop.on && loop.b !== null && (ctl.loopPosition ?? ctl.position)() >= loop.b) (ctl.loopSeek ?? ctl.seek)(loop.a);
     },
   };
 }
@@ -651,8 +653,8 @@ const TAKE_LABEL = { guitar: '🎸 Minha guitarra/violão', bass: '🎸 Meu baix
 
 /** Toca várias faixas juntas, cada uma com volume, mudo e um início próprio (gravação começa no meio da música). */
 class Mixer {
-  constructor() {
-    this.ctx = new AudioContext({ latencyHint: 'interactive' });
+  constructor(opts = {}) {
+    this.ctx = new AudioContext({ latencyHint: 'interactive', ...opts });
     this.master = this.ctx.createGain();
     this.master.connect(this.ctx.destination);
     this.tracks = new Map(); // id → { buffer, gain, offset, volume, muted }
@@ -765,6 +767,8 @@ class Mixer {
     return (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0);
   }
   close() {
+    if (this.closed) return; // a tela pode ter redesenhado no meio: fechar 2× não quebra
+    this.closed = true;
     this.stopSources();
     this.ctx.close();
   }
@@ -888,6 +892,455 @@ class YtMixer extends Mixer {
     super.close();
     this.yt.onState = null;
     this.yt.destroy();
+  }
+}
+
+// ---------- Separar ao vivo (S15, igual ao D74 do Vida de Jão): o YouTube toca mudo num <webview> e o Demucs separa o som dele na hora. ----------
+
+/** O SoloBand liga o <webview> (só ele consegue capturar o som do player sozinho). No navegador/celular, não. */
+// Função (não constante): o Electron registra o <webview> depois que o script carrega.
+const hasWebview = () => Boolean(window.customElements?.get('webview'));
+const LIVE_DELAY = 3.5; // s entre o vídeo e o som separado (1 s novo + 1,5 s de "depois" + GPU + folga; medido na Snow)
+const LIVE_SR = 44100;
+const LIVE_STEMS = ['drums', 'bass', 'other', 'vocals', 'guitar', 'piano']; // ordem que o separador devolve
+const LIVE_WORKLET = `
+class VidaCap extends AudioWorkletProcessor {
+  process(inputs) {
+    const c = inputs[0];
+    if (c && c.length) this.port.postMessage({ t: currentTime, l: c[0].slice(0), r: (c[1] ?? c[0]).slice(0) });
+    return true;
+  }
+}
+registerProcessor('vida-cap', VidaCap);`;
+
+/** O player do YouTube num <webview> (outro conteúdo): mesmo jeito do YtPlayer, controlado por executeJavaScript. */
+class WebviewYt {
+  static async create(box, videoId, { onError } = {}) {
+    const me = new WebviewYt();
+    const wv = (me.wv = document.createElement('webview'));
+    wv.src = `${location.origin}/yt-player.html?v=${encodeURIComponent(videoId)}`;
+    box.appendChild(wv);
+    await new Promise((ok) => wv.addEventListener('dom-ready', ok, { once: true }));
+    for (let i = 0; i < 100 && wv.isConnected; i++) {
+      const [ready, err] = (await me.exec('[!!window.ytReady, window.ytError ?? null]')) ?? [false, null];
+      if (err) {
+        onError?.(YT_ERRORS[err] ?? `O YouTube deu erro (${err}).`);
+        break;
+      }
+      if (ready) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    me.timer = setInterval(() => me.poll(), 100);
+    return me;
+  }
+  constructor() {
+    this.state = -1;
+    this.rate = 1;
+    this.dur = 0;
+    this.anchor = { pos: 0, t: performance.now() };
+  }
+  get playing() {
+    return this.state === 1;
+  }
+  /** executeJavaScript sem quebrar: com o webview fora da tela (redesenhou), só devolve null. */
+  async exec(js) {
+    try {
+      return this.wv?.isConnected ? await this.wv.executeJavaScript(js) : null;
+    } catch {
+      return null;
+    }
+  }
+  async poll() {
+    if (this.busy || !this.wv?.isConnected) return;
+    this.busy = true;
+    try {
+      const info = await this.exec('ytInfo()');
+      if (!info) throw new Error('sem player');
+      const [st, t, d, r] = info;
+      const now = performance.now();
+      const changed = st !== this.state || r !== this.rate;
+      this.dur = d || this.dur;
+      if (changed || !this.playing || Math.abs(t - this.position()) > 0.12) this.anchor = { pos: t, t: now };
+      this.state = st;
+      this.rate = r;
+      this.onPoll?.(changed);
+    } catch {}
+    this.busy = false;
+  }
+  position() {
+    return this.playing ? this.anchor.pos + ((performance.now() - this.anchor.t) / 1000) * this.rate : this.anchor.pos;
+  }
+  duration() {
+    return this.dur;
+  }
+  run(js) {
+    return this.exec(`void (${js})`);
+  }
+  play() {
+    this.run('yt.playVideo()');
+  }
+  pause() {
+    this.run('yt.pauseVideo()');
+  }
+  seek(pos) {
+    this.anchor = { pos, t: performance.now() };
+    this.run(`yt.seekTo(${Number(pos)}, true)`);
+  }
+  setRate(r) {
+    this.anchor = { pos: this.position(), t: performance.now() };
+    this.rate = r;
+    this.run(`yt.setPlaybackRate(${Number(r)})`);
+  }
+  destroy() {
+    clearInterval(this.timer);
+    this.wv?.remove();
+    this.wv = null;
+  }
+}
+
+/**
+ * Mixer do "separar ao vivo": o som do vídeo é capturado (o webview fica mudo), vai pro separador na GPU
+ * (/api/live/*) e as 6 faixas voltam e tocam LIVE_DELAY segundos depois, cada uma com volume e mudo.
+ * Pra tab, a contagem e a gravação, a posição é a do que o João OUVE (o vídeo menos o atraso), não a do vídeo.
+ */
+class LiveMixer extends Mixer {
+  constructor(yt) {
+    super({ sampleRate: LIVE_SR });
+    this.yt = yt;
+    this.rate = 1;
+    this.stalls = 0;
+    this.intent = false; // o João mandou tocar (o botão), mesmo que o som ainda não tenha chegado
+    this.history = []; // { t (relógio do áudio), pos, playing, rate } do vídeo, a cada leitura
+    this.flushAt = -Infinity; // som capturado antes disso não toca (pulou ou pausou)
+    this.frozen = 0; // posição mostrada enquanto o som novo não chega
+    this.heard = false;
+    this.liveSources = new Set();
+    this.stats = { late: 0, gpuMs: 0, chunks: 0 };
+    this.sent = 0; // amostras de captura já mandadas
+    this.sendQ = Promise.resolve();
+    for (const id of LIVE_STEMS) {
+      const gain = this.ctx.createGain();
+      gain.connect(this.master);
+      this.tracks.set(id, { buffer: null, gain, offset: 0, volume: 1, muted: false, live: true });
+    }
+    yt.onPoll = () => this.record();
+    this.loop = setInterval(() => this.tick(), 40);
+  }
+  // `playing` = o som separado tá tocando (o Mixer escreve nele; aqui é calculado).
+  get playing() {
+    return this.heard;
+  }
+  set playing(_) {}
+
+  /** Liga o separador e a captura. Joga erro com o motivo em português. */
+  async startLive(onStep = () => {}) {
+    onStep('Ligando o separador na placa de vídeo (na 1ª vez demora uns segundos)…');
+    const gone = () => {
+      if (!this.closed) return false;
+      this.capture?.getTracks().forEach((t) => t.stop());
+      return true;
+    };
+    const st = await send('/api/live/start', 'POST');
+    if (gone()) throw new Error('fechou');
+    this.gpu = st.gpu;
+    // A captura só liga com a janela à vista (o Electron precisa de um quadro do vídeo pra começar; escondida dá
+    // "Timeout starting video source"). Depois de ligada, pode ir pra outra janela que o som continua.
+    const visible = async () => {
+      if (document.visibilityState === 'visible') return;
+      onStep('Volta pra janela do app pra ligar o separador…');
+      await new Promise((ok) => document.addEventListener('visibilitychange', function f() {
+        if (document.visibilityState === 'visible') document.removeEventListener('visibilitychange', f), ok();
+      }));
+      if (gone()) throw new Error('fechou');
+    };
+    const capture = () => navigator.mediaDevices.getDisplayMedia({ video: true, audio: { channelCount: 2, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    await visible();
+    onStep('Capturando o som do vídeo…');
+    let stream;
+    try {
+      stream = await capture();
+    } catch (err) {
+      if (!/timeout/i.test(err.message)) throw err;
+      await visible(); // escondeu no meio: tenta de novo quando voltar
+      stream = await capture();
+    }
+    stream.getVideoTracks().forEach((t) => t.stop());
+    const track = stream.getAudioTracks()[0];
+    if (!track) throw new Error('O app não conseguiu capturar o som do vídeo.');
+    this.capture = stream;
+    if (gone()) throw new Error('fechou');
+    this.capLatency = track.getSettings().latency || 0;
+    if (this.ctx.state === 'suspended') await this.ctx.resume();
+    await this.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([LIVE_WORKLET], { type: 'text/javascript' })));
+    if (gone()) throw new Error('fechou');
+    const src = this.ctx.createMediaStreamSource(new MediaStream([track]));
+    const node = new AudioWorkletNode(this.ctx, 'vida-cap', { channelCount: 2, channelCountMode: 'explicit' });
+    const sink = this.ctx.createGain();
+    sink.gain.value = 0; // só pra manter a captura rodando
+    src.connect(node).connect(sink).connect(this.ctx.destination);
+    this.capNodes = [src, node, sink];
+    this.readOut();
+    let pend = [];
+    let pendN = 0;
+    this.pushPending = () => {
+      if (!pendN) return;
+      const out = new Float32Array(pendN * 2);
+      let k = 0;
+      for (const p of pend) for (let i = 0; i < p.l.length; i++) (out[k++] = p.l[i]), (out[k++] = p.r[i]);
+      const start = this.sent;
+      this.sent += pendN;
+      pend = [];
+      pendN = 0;
+      this.send({ 'x-start': String(start) }, out);
+    };
+    node.port.onmessage = ({ data }) => {
+      this.t0 ??= data.t; // a amostra 0 da captura entrou neste instante do relógio
+      pend.push(data);
+      pendN += data.l.length;
+      if (pendN >= 4410) this.pushPending(); // de 0,1 em 0,1 s
+    };
+  }
+  /** Um envio por vez, na ordem (o separador recomeça se faltar um pedaço). */
+  send(headers, body) {
+    this.sendQ = this.sendQ.then(() =>
+      fetch('/api/live/in', { method: 'POST', headers: { 'content-type': 'application/octet-stream', ...headers }, body: body ?? undefined, signal: this.abort?.signal }).catch(() => {}),
+    );
+  }
+  /** Lê as faixas separadas e agenda cada pedaço pra tocar LIVE_DELAY depois de quando ele foi capturado. */
+  async readOut() {
+    this.abort = new AbortController();
+    const res = await fetch('/api/live/out', { signal: this.abort.signal });
+    const reader = res.body.getReader();
+    let buf = new Uint8Array(0);
+    let skip = 4; // marca "VDJL" do começo
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const next = new Uint8Array(buf.length + value.length);
+        next.set(buf);
+        next.set(value, buf.length);
+        buf = next;
+        if (skip) {
+          if (buf.length < skip) continue;
+          buf = buf.slice(skip);
+          skip = 0;
+        }
+        while (buf.length >= 12) {
+          const dv = new DataView(buf.buffer, buf.byteOffset, 12);
+          const start = dv.getInt32(0, true);
+          const n = dv.getInt32(4, true);
+          const size = 12 + 6 * 2 * n * 4;
+          if (buf.length < size) break;
+          this.stats.gpuMs = dv.getInt32(8, true);
+          this.schedule(start, n, new Float32Array(buf.slice(12, size).buffer));
+          buf = buf.slice(size);
+        }
+      }
+    } catch {}
+  }
+  schedule(start, n, pcm) {
+    const captured = this.t0 + start / LIVE_SR;
+    if (captured < this.flushAt) return; // som de antes de pular/pausar
+    const when = captured + LIVE_DELAY;
+    if (when < this.ctx.currentTime + 0.01) return void this.stats.late++;
+    this.stats.chunks++;
+    LIVE_STEMS.forEach((id, i) => {
+      const b = this.ctx.createBuffer(2, n, LIVE_SR);
+      b.copyToChannel(pcm.subarray(i * 2 * n, (i * 2 + 1) * n), 0);
+      b.copyToChannel(pcm.subarray((i * 2 + 1) * n, (i * 2 + 2) * n), 1);
+      const s = this.ctx.createBufferSource();
+      s.buffer = b;
+      s.connect(this.tracks.get(id).gain);
+      s.onended = () => this.liveSources.delete(s);
+      this.liveSources.add(s);
+      s.start(when);
+    });
+    this.onStats?.(this.stats);
+  }
+
+  /** Guarda onde o vídeo tava (no relógio do áudio). */
+  record() {
+    const y = this.yt;
+    const t = this.ctx.currentTime;
+    const playing = y.playing;
+    const last = this.history.at(-1);
+    if (playing && !last?.playing && this.countIn) this.scheduleSticks(t);
+    // Pausou ou deu play pelo próprio vídeo (clique nele): vale como o botão.
+    if (last && last.playing && !playing && y.state === 2 && this.intent) {
+      this.intent = false;
+      this.stopAtHeard();
+    } else if (playing && !this.intent) this.intent = true;
+    this.history.push({ t, pos: y.position(), playing, rate: y.rate });
+    while (this.history.length > 2 && this.history[1].t < t - 30) this.history.shift();
+    if (y.state === 0 && this.intent) this.ended = true;
+  }
+  /** O que o João ouve no instante `t` (relógio do áudio): onde o vídeo tava LIVE_DELAY antes. */
+  heardAt(t) {
+    const tau = t - LIVE_DELAY - (this.capLatency || 0);
+    if (tau < this.flushAt) return { pos: this.frozen, playing: false };
+    let s = null;
+    for (let i = this.history.length - 1; i >= 0; i--) if (this.history[i].t <= tau) {
+      s = this.history[i];
+      break;
+    }
+    if (!s || s.t < this.flushAt) return { pos: this.frozen, playing: false };
+    return { pos: s.pos + (s.playing ? (tau - s.t) * s.rate : 0), playing: s.playing };
+  }
+  position() {
+    return Math.max(0, this.heardAt(this.ctx.currentTime).pos);
+  }
+  duration() {
+    return this.yt.duration();
+  }
+  tick() {
+    const now = this.ctx.currentTime;
+    const h = this.heardAt(now);
+    if (h.playing && !this.heard) {
+      this.heard = true;
+      this.startPos = h.pos;
+      this.startedAt = now;
+      this.started = { pos: h.pos, at: now };
+      this.startTakes(h.pos);
+      this.onPlay?.(h.pos, now);
+    } else if (!h.playing && this.heard) {
+      this.heard = false;
+      this.stopSources();
+      if (this.intent && !this.ended) this.stalls++; // o vídeo parou pra carregar (ninguém pausou)
+      this.onPause?.();
+      if (this.ended) {
+        this.ended = false;
+        this.intent = false;
+        this.onEnd?.();
+      }
+    } else if (h.playing && Math.abs(h.pos - (this.lastHeard ?? h.pos)) > 0.3 + 0.04 * 2) {
+      // Pulou sem cortar o som (o A–B voltando pro A): as gravações e a tab recomeçam do ponto novo.
+      this.startTakes(h.pos);
+      this.onPlay?.(h.pos, now);
+    }
+    this.lastHeard = h.playing ? h.pos + 0.04 * (this.history.at(-1)?.rate ?? 1) : null;
+  }
+  startTakes(pos) {
+    this.stopSources();
+    if (this.rate !== 1) return; // em outra velocidade a gravação não acompanha
+    const when = this.ctx.currentTime + 0.01;
+    for (const t of this.tracks.values()) {
+      if (!t.buffer) continue;
+      const rel = pos - t.offset;
+      if (rel >= t.buffer.duration) continue;
+      const src = this.ctx.createBufferSource();
+      src.buffer = t.buffer;
+      src.connect(t.gain);
+      src.start(when + Math.max(0, -rel), Math.max(0, rel));
+      this.sources.push(src);
+    }
+  }
+  /** Corta o som agora (pausou ou pulou): o que já tava na fila não toca, e o separador esquece o contexto. */
+  flush(pos) {
+    this.flushAt = this.ctx.currentTime;
+    this.frozen = pos;
+    for (const s of this.liveSources) {
+      try {
+        s.stop();
+      } catch {}
+    }
+    this.liveSources.clear();
+    this.stopSources();
+    this.pushPending?.();
+    this.send({ 'x-start': String(this.sent), 'x-reset': '1' });
+    if (this.heard) {
+      this.heard = false;
+      this.onPause?.();
+    }
+  }
+  /** Tocar: o vídeo sai já; o som separado chega LIVE_DELAY depois (a contagem cai bem antes dele). */
+  play(pos = this.position(), countIn = null) {
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    if (Math.abs(this.yt.position() - pos) > 0.25) {
+      this.flush(pos);
+      this.yt.seek(pos);
+    }
+    this.intent = true;
+    this.ended = false;
+    clearTimeout(this.startTimer);
+    const beat = countIn ? 60 / countIn.bpm : 0;
+    const total = (countIn?.beats ?? 0) * beat;
+    // Contagem mais longa que o atraso (música lenta): segura o vídeo um pouco, pra dar tempo das baquetadas.
+    const wait = Math.max(0, total - LIVE_DELAY + 0.2);
+    this.countIn = countIn ? { beats: countIn.beats, beat } : null;
+    this.startTimer = setTimeout(() => this.intent && this.yt.play(), wait * 1000);
+    return this.ctx.currentTime + wait + LIVE_DELAY;
+  }
+  /** As baquetadas: terminam bem quando o som separado começa (o vídeo saiu em `tv`). */
+  scheduleSticks(tv) {
+    const { beats, beat } = this.countIn;
+    this.countIn = null;
+    const first = tv + LIVE_DELAY + (this.capLatency || 0) - beats * beat;
+    for (let i = 0; i < beats; i++) if (first + i * beat > this.ctx.currentTime) this.sources.push(this.stick(first + i * beat));
+  }
+  /**
+   * Pausa no que o João OUVIU: o vídeo (que tava 3,5 s na frente) volta pra esse ponto. Sem isso, a posição
+   * passava a ser a do vídeo uns segundos depois de pausar: a tab pulava pra frente e o play pulava esse trecho.
+   */
+  pause() {
+    clearTimeout(this.startTimer);
+    this.intent = false;
+    this.countIn = null;
+    this.stopAtHeard();
+  }
+  stopAtHeard() {
+    const h = this.position();
+    this.yt.pause();
+    this.yt.seek(h);
+    this.flush(h);
+  }
+  seek(pos) {
+    this.flush(pos);
+    this.yt.seek(pos);
+    if (!this.intent) this.onPause?.();
+  }
+  /** A–B: volta pro A sem cortar o som (o atraso é igual pros dois lados, então emenda certinho). */
+  loopTo(pos) {
+    this.pushPending?.();
+    this.yt.seek(pos);
+    this.send({ 'x-start': String(this.sent), 'x-reset': '1' });
+  }
+  setRate(r) {
+    this.rate = r;
+    this.yt.setRate(r);
+    if (this.heard) this.startTakes(this.position());
+  }
+  // Gravação nova / ajuste fino: as gravações recomeçam no ponto certo (no Mixer isso pularia, e aqui pular corta o som).
+  add(id, buffer, opts) {
+    const was = this.heard;
+    this.heard = false;
+    super.add(id, buffer, opts);
+    this.heard = was;
+    if (was) this.startTakes(this.position());
+  }
+  set(id, patch) {
+    const t = this.tracks.get(id);
+    if (!t) return;
+    Object.assign(t, patch);
+    this.apply(id);
+    if ('offset' in patch && this.heard) this.startTakes(this.position());
+  }
+  close() {
+    if (this.closed) return;
+    clearInterval(this.loop);
+    clearTimeout(this.startTimer);
+    this.abort?.abort();
+    this.capture?.getTracks().forEach((t) => t.stop());
+    for (const n of this.capNodes ?? []) n.disconnect();
+    for (const s of this.liveSources) {
+      try {
+        s.stop();
+      } catch {}
+    }
+    this.liveSources.clear();
+    this.yt.onPoll = null;
+    this.yt.destroy();
+    super.close();
   }
 }
 
@@ -1241,6 +1694,11 @@ async function studioSongView(ref) {
   const has = { gp: d.tab_available, mp3: state.stems.length > 0, youtube: Boolean(ytIdOf(s.youtube_url)) };
   const wanted = studioPrefs(s.url_slug).source;
   const source = has[wanted] ? wanted : has.mp3 ? 'mp3' : has.youtube ? 'youtube' : has.gp ? 'gp' : null;
+  // Separar ao vivo (S15): com o separador instalado e placa NVIDIA.
+  const liveSt = hasWebview() && has.youtube ? await api('/api/live').catch(() => null) : null;
+  const canLive = Boolean(liveSt?.available);
+  const liveOn = canLive && studioPrefs(s.url_slug).live !== false;
+  d.live_on = source === 'youtube' && liveOn;
   const fileInput = '<input id="st-file" type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,audio/*" hidden>';
   // Log do separador (o que ele tá fazendo, ou onde parou), fechado por padrão.
   const sepLog = d.sep_log?.lines.length
@@ -1264,7 +1722,7 @@ async function studioSongView(ref) {
     <div class="seg" role="group" aria-label="Som da banda">
       <button class="${source === 'gp' ? 'active' : ''}" data-src="gp" ${has.gp ? '' : 'disabled'}>🎼 Usar Guitar Pro<span>${has.gp ? 'som do arquivo da tab, sem voz' : 'essa música não tem arquivo Guitar Pro'}</span></button>
       <button class="${source === 'mp3' ? 'active' : ''}" data-src="mp3" ${has.mp3 ? '' : 'disabled'}>🎧 Usar MP3<span>${has.mp3 ? 'a música de verdade, separada' : sep.status === 'running' ? 'separando…' : 'ainda sem MP3'}</span></button>
-      <button class="${source === 'youtube' ? 'active' : ''}" data-src="youtube" ${has.youtube ? '' : 'disabled'}>🎬 Usar YouTube<span>${has.youtube ? 'o vídeo, sem baixar nada (precisa de internet)' : 'cola o link do vídeo aqui embaixo'}</span></button>
+      <button class="${source === 'youtube' ? 'active' : ''}" data-src="youtube" ${has.youtube ? '' : 'disabled'}>🎬 Usar YouTube<span>${!has.youtube ? 'cola o link do vídeo aqui embaixo' : canLive ? 'o vídeo, sem baixar nada, separado ao vivo' : 'o vídeo, sem baixar nada (precisa de internet)'}</span></button>
     </div>`;
   const ytLine = has.youtube
     ? `<p class="muted studio-src-line">🎬 <a href="${esc(s.youtube_url)}" target="_blank" rel="noopener">vídeo no YouTube ↗</a> <button class="link-btn" id="st-yt-edit">trocar o link</button></p>
@@ -1279,6 +1737,10 @@ async function studioSongView(ref) {
     }
     wireStudioSource(d);
     wireYoutubeLink(d);
+    document.getElementById('st-live')?.addEventListener('change', (e) => {
+      saveStudioPrefs(s.url_slug, { ...studioPrefs(s.url_slug), live: e.target.checked });
+      render();
+    });
     if (source) mountStudio(d, source).catch((e) => toast(e.message));
   }, 0);
   return `
@@ -1290,7 +1752,8 @@ async function studioSongView(ref) {
     ${ytLine}
     ${mp3Card}
     <p class="muted studio-src-line">${d.tab_available ? 'Guitar Pro na música.' : 'Sem Guitar Pro.'} <label class="link-btn file-btn">${d.tab_available ? 'Trocar o Guitar Pro' : 'Pôr o Guitar Pro (.gp)'}<input id="st-gp" type="file" accept=".gp,.gp3,.gp4,.gp5,.gpx,.gp7" hidden></label> <span class="muted">· ou baixa na pasta vigiada que ele entra sozinho</span></p>
-    ${source === 'youtube' ? '<div class="card yt-card studio-yt"><div class="yt-frame" id="st-yt"></div><p class="muted yt-msg" id="st-yt-msg"></p></div>' : ''}
+    ${source === 'youtube' ? `<div class="card yt-card studio-yt"><div class="yt-frame" id="st-yt"></div><p class="muted yt-msg" id="st-yt-msg"></p>
+      ${canLive ? `<label class="live-toggle"><input type="checkbox" id="st-live" ${liveOn ? 'checked' : ''}> ✂️ <b>Separar as faixas ao vivo</b> <span class="muted">na placa de vídeo: volume por instrumento, e o som sai uns ${String(LIVE_DELAY).replace('.', ',')} s depois do vídeo</span></label>` : ''}</div>` : ''}
     <div id="st-main" class="studio-main">${source ? `<p class="muted" id="st-loading">${source === 'youtube' ? 'Abrindo o YouTube…' : 'Carregando as faixas…'}</p>` : '<p class="empty">Sem som da banda ainda: cola o link do YouTube ou põe o MP3 aí em cima.</p>'}</div>`;
 }
 
@@ -1404,9 +1867,31 @@ async function mountStudio(d, source) {
   if (!main) return;
   const slug = s.url_slug;
   const yt = source === 'youtube';
+  const live = yt && d.live_on;
   const session = (studioSession = { mixer: null, recorder: null, slug });
   let mixer;
-  if (yt) {
+  if (live) {
+    // Ao vivo (S15): o vídeo toca mudo num <webview> e o som dele é separado na GPU e volta pro mixer.
+    const msg = document.getElementById('st-yt-msg');
+    const player = await WebviewYt.create(document.getElementById('st-yt'), ytIdOf(s.youtube_url), { onError: (m) => (msg.textContent = m) });
+    if (studioSession !== session) return player.destroy();
+    mixer = session.mixer = new LiveMixer(player);
+    try {
+      await mixer.startLive((m) => {
+        const l = document.getElementById('st-loading');
+        if (l) l.textContent = m;
+      });
+    } catch (err) {
+      if (studioSession !== session) return;
+      main.innerHTML = `<div class="card"><p><b>Não deu pra separar ao vivo.</b> ${esc(err.message)}</p><p><button class="btn" id="st-live-off">Tocar o vídeo sem separar</button></p></div>`;
+      document.getElementById('st-live-off').onclick = () => {
+        saveStudioPrefs(slug, { ...studioPrefs(slug), live: false });
+        render();
+      };
+      return;
+    }
+    if (studioSession !== session) return;
+  } else if (yt) {
     // YouTube (S14): o vídeo é o som da banda; o player fica fora do #st-main (que é redesenhado aqui embaixo).
     const msg = document.getElementById('st-yt-msg');
     const player = await YtPlayer.create(document.getElementById('st-yt'), ytIdOf(s.youtube_url), { onError: (m) => (msg.textContent = m) });
@@ -1416,8 +1901,9 @@ async function mountStudio(d, source) {
   session.mixer = mixer;
   const prefs = studioPrefs(slug);
   // Volume é por fonte: "guitarras" do MP3 e as faixas do Guitar Pro não se misturam.
-  prefs[source] ??= {};
-  const vols = prefs[source];
+  const volKey = live ? 'liveStems' : source; // 'live' é a chave do "separar ao vivo"
+  prefs[volKey] ??= {};
+  const vols = prefs[volKey];
   const savePrefs = () => saveStudioPrefs(slug, prefs);
   // Faixas: as separadas do MP3, ou cada faixa do Guitar Pro virada em áudio.
   const decode = async (url) => mixer.ctx.decodeAudioData(await (await fetch(url)).arrayBuffer());
@@ -1442,7 +1928,9 @@ async function mountStudio(d, source) {
   const vol = (id, def = 1) => vols[id]?.v ?? def;
   const muted = (id) => vols[id]?.m ?? false;
   for (const t of tracks) mixer.add(t.id, t.buffer, { volume: vol(t.id), muted: muted(t.id) });
-  if (yt) mixer.yt.setVolume(vol('yt'));
+  if (yt && !live) mixer.yt.setVolume(vol('yt'));
+  if (live) for (const id of LIVE_STEMS) mixer.set(id, { volume: vol(id), muted: muted(id) });
+  const rowTracks = live ? LIVE_STEMS.map((id) => ({ id, label: STEM_LABEL[id] ?? id })) : tracks;
   // Gravação feita em cima do YouTube só toca junto do YouTube (o tempo do vídeo não é o do MP3), e vice-versa.
   const takeSource = yt ? 'youtube' : 'audio';
   const takes = {};
@@ -1485,6 +1973,7 @@ async function mountStudio(d, source) {
   // Não pede ao abrir a tela: só no "Mostrar entradas" ou no ⏺ Gravar. Já liberado = não pergunta nada.
   const listInputs = async () => (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter((x) => x.kind === 'audioinput');
   const devices = await listInputs();
+  if (studioSession !== session) return; // redesenhou enquanto listava as entradas
   const named = () => devices.some((x) => x.label);
   window.__studio = session; // pra depurar no console
 
@@ -1513,20 +2002,21 @@ async function mountStudio(d, source) {
       </div>
       <div id="st-tab" class="tab-box studio-tab-box"></div>
     </details>` : ''}
-    ${yt ? '' : `<div class="chips studio-presets">
+    ${yt && !live ? '' : `<div class="chips studio-presets">
       <button class="chip" data-preset="guitar">🎸 Vou tocar guitarra/violão</button>
       <button class="chip" data-preset="bass">🎸 Vou tocar baixo</button>
       <button class="chip" data-preset="drums">🥁 Vou tocar bateria</button>
       <button class="chip" data-preset="vocal">🎤 Vou cantar</button>
       <button class="chip" data-preset="all">Tudo normal</button>
     </div>`}
-    <h2>Mixer <span class="muted">· ${source === 'gp' ? '🎼 som do Guitar Pro' : yt ? '🎬 YouTube' : '🎧 MP3 separado'}</span></h2>
+    <h2>Mixer <span class="muted">· ${source === 'gp' ? '🎼 som do Guitar Pro' : live ? '🎬 YouTube separado ao vivo' : yt ? '🎬 YouTube' : '🎧 MP3 separado'}</span></h2>
     <div class="card mixer-card">
-      ${yt ? `<div class="mix-row" data-yt-row><span></span><span class="mix-name">🎬 Vídeo do YouTube</span>
+      ${live ? `<p class="muted mix-note" id="st-live-info">Separando ao vivo na ${esc(mixer.gpu ?? 'placa de vídeo')}. Dá play: o som chega uns ${String(LIVE_DELAY).replace('.', ',')} s depois do vídeo.</p>` : ''}
+      ${yt && !live ? `<div class="mix-row" data-yt-row><span></span><span class="mix-name">🎬 Vídeo do YouTube</span>
           <input type="range" min="0" max="100" step="5" value="${Math.round(vol('yt') * 100)}" data-yt-vol aria-label="Volume do YouTube"><b class="mix-val" data-yt-val>${Math.round(vol('yt') * 100)}%</b></div>
         <p class="muted mix-note">No YouTube não dá pra separar os instrumentos: pra tirar a tua parte, usa o MP3.</p>` : ''}
       ${otherTakes.length ? `<p class="muted mix-note">${otherTakes.map((k) => TAKE_LABEL[k]).join(' e ')}: gravado em cima ${yt ? 'do MP3/Guitar Pro' : 'do YouTube'}, só toca junto ${yt ? 'deles' : 'dele'}. Gravar aqui substitui.</p>` : ''}
-      ${tracks.map((t) => rowHtml(t.id, t.label)).join('')}
+      ${rowTracks.map((t) => rowHtml(t.id, t.label)).join('')}
       <div id="st-take-rows">${takeRows()}</div>
       <div id="st-new-row"></div>
     </div>
@@ -1699,7 +2189,9 @@ async function mountStudio(d, source) {
   const play = document.getElementById('st-play');
   const seek = document.getElementById('st-seek');
   const time = document.getElementById('st-time');
-  const showPlay = () => (play.textContent = mixer.playing ? '⏸ Pausar' : '▶ Tocar');
+  // No ao vivo, o botão segue o que a pessoa mandou (o som ainda pode estar chegando).
+  const isOn = () => mixer.intent ?? mixer.playing;
+  const showPlay = () => (play.textContent = isOn() ? '⏸ Pausar' : '▶ Tocar');
   const countSel = document.getElementById('st-count');
   const bpmSel = document.getElementById('st-bpm');
   const countIn = () => (countSel.checked ? { beats: 4, bpm: Math.min(240, Math.max(40, Number(bpmSel.value) || 100)) } : null);
@@ -1710,7 +2202,7 @@ async function mountStudio(d, source) {
   };
   play.onclick = () => {
     if (session.recording) return;
-    if (mixer.playing) mixer.pause();
+    if (isOn()) mixer.pause();
     else mixer.play(mixer.position(), countIn());
     showPlay();
   };
@@ -1733,8 +2225,16 @@ async function mountStudio(d, source) {
           session.tab?.resync();
         },
         canRate: () => (session.recording ? (toast('Gravando: a velocidade fica em 1×.'), false) : true),
+        // Ao vivo: o A–B olha o vídeo (que vai na frente) e volta sem cortar o som.
+        ...(live ? { loopPosition: () => mixer.yt.position(), loopSeek: (p) => mixer.loopTo(p) } : {}),
       })
     : null;
+  if (live) {
+    const info = document.getElementById('st-live-info');
+    mixer.onStats = (st) => {
+      if (info) info.textContent = `Separando ao vivo na ${mixer.gpu ?? 'placa de vídeo'} (~${st.gpuMs} ms por segundo de música). O som sai ${String(LIVE_DELAY).replace('.', ',')} s depois do vídeo.${st.late ? ` ${st.late} pedaço(s) chegaram tarde.` : ''}`;
+    };
+  }
   session.timer = setInterval(() => {
     practice?.tick();
     const p = mixer.position();

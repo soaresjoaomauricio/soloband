@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.1.6",
+    "date": "2026-11-04",
+    "items": [
+      "**Separar o YouTube ao vivo:** no 🎬 YouTube, a chave **✂️ Separar as faixas ao vivo** (vem ligada) separa o vídeo na hora em voz, guitarras, baixo, bateria, teclado e outros, cada um com volume e mudo. O **Vou tocar guitarra / baixo / bateria / Vou cantar** funciona igual ao MP3. Sem baixar nada.",
+      "O vídeo toca mudo e o som separado sai **uns 3,5 s depois**: cada play, pausa ou pulo espera esses segundos. A tab, as 4 baquetadas, o repetir trecho e a gravação seguem o que tu ouve.",
+      "Precisa do **separador instalado** (Configurações) e de **placa de vídeo NVIDIA**: no processador não acompanha a música. Sem isso, o YouTube toca sem separar, como antes.",
+      "Repetir trecho: marcar o **B** já volta pro **A**."
+    ]
+  },
+  {
     "version": "0.1.5",
     "date": "2026-11-04",
     "items": [

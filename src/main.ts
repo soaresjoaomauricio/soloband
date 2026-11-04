@@ -1,6 +1,6 @@
 // SoloBand: o processo principal. Sobe o servidor dentro do próprio app (S05) numa porta livre de 127.0.0.1,
 // abre a janela nele, vigia a pasta de tabs e cuida da atualização pelo GitHub Releases.
-import { app, BrowserWindow, nativeTheme, session, shell } from 'electron';
+import { app, BrowserWindow, nativeTheme, session, shell, webContents } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { readConfig } from './config';
 import { makePaths } from './paths';
+import { live } from './live';
 import { buildServer } from './server';
 import { watchFolder } from './songs';
 
@@ -88,11 +89,34 @@ async function boot(): Promise<void> {
   log(`SoloBand ${app.getVersion()} em ${base}`);
   startWatch();
 
-  // Microfone e área de transferência liberados só pras telas do próprio app.
+  // Microfone, área de transferência e a captura do player (separar ao vivo) liberados só pras telas do próprio app.
+  const ALLOWED = ['media', 'clipboard-read', 'clipboard-sanitized-write', 'display-capture'];
   session.defaultSession.setPermissionRequestHandler((wc, permission, done) => {
-    done(wc.getURL().startsWith(base) && ['media', 'clipboard-read', 'clipboard-sanitized-write'].includes(permission));
+    done(wc.getURL().startsWith(base) && ALLOWED.includes(permission));
   });
-  session.defaultSession.setPermissionCheckHandler((_wc, permission, origin) => origin.startsWith(base) && ['media', 'clipboard-read', 'clipboard-sanitized-write'].includes(permission));
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, origin) => origin.startsWith(base) && ALLOWED.includes(permission));
+  // Separar ao vivo (S15): o player do YouTube roda num <webview> dentro da tela; a tela pede getDisplayMedia e
+  // recebe só o som dele (que fica mudo nas caixas), sem mutar o resto (as faixas separadas, a gravação).
+  const player = `${base}/yt-player.html`;
+  session.defaultSession.setDisplayMediaRequestHandler((req, cb) => {
+    const host = req.frame ? webContents.fromFrame(req.frame) : undefined;
+    const ok = host && host.getURL().startsWith(base);
+    const guest = ok ? webContents.getAllWebContents().find((w) => w.getType() === 'webview' && w.hostWebContents?.id === host.id && w.getURL().startsWith(player)) : undefined;
+    if (!guest) return cb({});
+    cb({ video: guest.mainFrame, audio: guest.mainFrame });
+  });
+  app.on('web-contents-created', (_e, wc) => {
+    if (wc.getType() !== 'webview') return;
+    wc.setWindowOpenHandler(({ url }) => {
+      if (/^https:\/\//.test(url)) void shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    wc.on('will-navigate', (e, url) => {
+      if (url.startsWith(player)) return;
+      e.preventDefault();
+      if (/^https:\/\//.test(url)) void shell.openExternal(url);
+    });
+  });
 
   win = new BrowserWindow({
     width: 1280,
@@ -104,6 +128,14 @@ async function boot(): Promise<void> {
     backgroundColor: '#121211',
     autoHideMenuBar: true,
     show: false,
+    webPreferences: { webviewTag: true },
+  });
+  // O <webview> só pode abrir o player do próprio app, sem Node e sem preload.
+  win.webContents.on('will-attach-webview', (e, prefs, params) => {
+    if (!String(params.src).startsWith(player)) return e.preventDefault();
+    delete prefs.preload;
+    prefs.nodeIntegration = false;
+    prefs.contextIsolation = true;
   });
   win.setMenu(null);
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -131,5 +163,6 @@ app.whenReady().then(boot).catch((e) => {
 });
 app.on('window-all-closed', () => {
   stopWatch();
+  live.stop(); // solta a placa de vídeo
   app.quit();
 });
