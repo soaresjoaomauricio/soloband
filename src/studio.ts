@@ -5,7 +5,7 @@ import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Paths } from './paths';
 import { separatorPython } from './separator';
-import { AppError, getSong, loadScore, now, retire, saveSong, songDir, stamp, tabPath, tabTracks, type Song, type TakeKind } from './songs';
+import { AppError, getSong, loadScore, now, retire, saveSong, songDir, stamp, tabPath, tabTracks, type Song, type TakeKind, type TakeSource } from './songs';
 
 /** O Estúdio (vindo do Vida de Jão, D53): áudio da música, faixas separadas pelo Demucs e gravações. */
 export const STEMS = ['vocals', 'guitar', 'bass', 'drums', 'piano', 'other'] as const;
@@ -204,7 +204,7 @@ export async function autoAlign(p: Paths, id: string): Promise<{ ok: boolean; of
 }
 
 /** Salva a gravação como o "Ensaio Atual" daquele instrumento. A anterior vai pra "antigas". */
-export async function saveTake(p: Paths, id: string, kind: TakeKind, offsetMs: number, body: Readable): Promise<Song> {
+export async function saveTake(p: Paths, id: string, kind: TakeKind, offsetMs: number, body: Readable, source: TakeSource = 'audio'): Promise<Song> {
   const song = getSong(p, id);
   const dir = path.join(songDir(p, id), 'gravacoes');
   fs.mkdirSync(dir, { recursive: true });
@@ -212,7 +212,7 @@ export async function saveTake(p: Paths, id: string, kind: TakeKind, offsetMs: n
   if (old) retire(path.join(dir, old.file));
   const file = `${kind}-${stamp()}.wav`;
   await pipeline(body, fs.createWriteStream(path.join(dir, file)));
-  return saveSong(p, { ...getSong(p, id), takes: { ...song.takes, [kind]: { file, offset_ms: Math.round(offsetMs), nudge_ms: 0, created_at: now() } } });
+  return saveSong(p, { ...getSong(p, id), takes: { ...song.takes, [kind]: { file, offset_ms: Math.round(offsetMs), nudge_ms: 0, created_at: now(), source } } });
 }
 
 export function nudgeTake(p: Paths, id: string, kind: TakeKind, nudgeMs: number): Song {

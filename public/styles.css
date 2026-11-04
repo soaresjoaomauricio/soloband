@@ -429,7 +429,7 @@ details.research a { color: var(--accent); word-break: break-all; }
 .meter span { display: block; height: 100%; width: 0; background: var(--good); transition: width 0.08s; }
 @media (max-width: 600px) { .mix-row { grid-template-columns: 40px 1fr 52px; } .mix-row input[type='range'] { grid-column: 1 / -1; } }
 button.btn, label.btn { font: inherit; cursor: pointer; }
-.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.seg { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .seg button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; font-weight: 700; cursor: pointer; text-align: left; }
 .seg button span { font-weight: 400; font-size: 0.85rem; color: var(--muted); }
 .seg button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }

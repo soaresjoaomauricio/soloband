@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Paths } from './paths';
+import { normalizeYoutubeUrl, youtubeId } from './youtube';
 
 /** Uma música do SoloBand. Fica em musicas/<id>/musica.json, junto com os arquivos dela. */
 export interface Take {
@@ -13,7 +14,12 @@ export interface Take {
   /** Ajuste fino na tela, somado ao offset. */
   nudge_ms: number;
   created_at: string;
+  /** Em cima de qual som foi gravada (S14): o tempo do vídeo do YouTube não é o tempo do MP3/Guitar Pro. */
+  source?: TakeSource;
 }
+
+export const TAKE_SOURCES = ['audio', 'youtube'] as const;
+export type TakeSource = (typeof TAKE_SOURCES)[number];
 
 export const TAKE_KINDS = ['guitar', 'bass', 'vocal'] as const;
 export type TakeKind = (typeof TAKE_KINDS)[number];
@@ -31,6 +37,11 @@ export interface Song {
   /** Onde o compasso 1 do Guitar Pro cai no MP3 (ms). */
   tab_offset_ms: number;
   tab_offset_note: string | null;
+  /** Vídeo da música no YouTube (S14): toca pelo player embutido, nunca baixa. */
+  youtube_url?: string | null;
+  /** Onde o compasso 1 do Guitar Pro cai no vídeo (ms), marcado na tela. */
+  youtube_offset_ms?: number;
+  youtube_offset_note?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -45,7 +56,18 @@ export class AppError extends Error {
 }
 
 const Text = z.string().trim().min(1);
-export const CreateSong = z.object({ title: Text, artist: Text.default('Desconhecido'), bpm: z.number().int().min(20).max(300).nullable().optional() });
+/** Link de vídeo do YouTube, guardado sempre como https://www.youtube.com/watch?v=<id>. */
+const YoutubeUrl = z
+  .string()
+  .trim()
+  .refine((v) => youtubeId(v) !== null, 'Esse link não é de um vídeo do YouTube (youtube.com/watch?v=… ou youtu.be/…)')
+  .transform(normalizeYoutubeUrl);
+export const CreateSong = z.object({
+  title: Text,
+  artist: Text.default('Desconhecido'),
+  bpm: z.number().int().min(20).max(300).nullable().optional(),
+  youtube_url: YoutubeUrl.optional(),
+});
 export const UpdateSong = z
   .object({
     title: Text,
@@ -53,6 +75,9 @@ export const UpdateSong = z
     bpm: z.number().int().min(20).max(300).nullable(),
     tab_offset_ms: z.number().min(-60000).max(600000),
     tab_offset_note: Text.nullable(),
+    youtube_url: YoutubeUrl.nullable(),
+    youtube_offset_ms: z.number().min(-60000).max(600000),
+    youtube_offset_note: Text.nullable(),
   })
   .partial();
 
@@ -121,6 +146,9 @@ export function createSong(p: Paths, input: z.infer<typeof CreateSong>): Song {
     takes: {},
     tab_offset_ms: 0,
     tab_offset_note: null,
+    youtube_url: input.youtube_url ?? null,
+    youtube_offset_ms: 0,
+    youtube_offset_note: null,
     created_at: t,
     updated_at: t,
   });

@@ -82,7 +82,9 @@ async function boot(): Promise<void> {
     onConfigChange: startWatch,
   });
   await server.listen({ port: 0, host: '127.0.0.1' });
-  const base = `http://127.0.0.1:${(server.server.address() as AddressInfo).port}`;
+  // A janela abre em "localhost" (o servidor continua só no 127.0.0.1): o player do YouTube embutido (S14)
+  // recusa tocar (erro 150) numa página aberta pelo número 127.0.0.1.
+  const base = `http://localhost:${(server.server.address() as AddressInfo).port}`;
   log(`SoloBand ${app.getVersion()} em ${base}`);
   startWatch();
 

@@ -9,7 +9,8 @@ import { z, ZodError } from 'zod';
 import { readConfig, writeConfig } from './config';
 import type { Paths } from './paths';
 import { installSeparator, removeSeparator, separatorStatus } from './separator';
-import { AppError, attachTab, CreateSong, createSong, getSong, listSongs, loadScore, retireSong, TAB_RE, tabPath, tabTracks, TAKE_KINDS, updateSong, UpdateSong } from './songs';
+import { AppError, attachTab, CreateSong, createSong, getSong, listSongs, loadScore, retireSong, TAB_RE, tabPath, tabTracks, TAKE_KINDS, TAKE_SOURCES, updateSong, UpdateSong } from './songs';
+import { youtubeId, youtubeInfo } from './youtube';
 import { autoAlign, fixStale, isSeparating, nudgeTake, resetTake, saveOriginal, saveTake, separationLog, songAsset, startSeparation } from './studio';
 
 z.config(z.locales.pt());
@@ -52,6 +53,12 @@ export async function buildServer(p: Paths, host: Host = { version: '0.0.0' }): 
   app.get('/api/songs', async () => listSongs(p).map((s) => (s.separation.status === 'running' ? fixStale(p, s.id) : s)));
   app.post('/api/songs', async (req, reply) => reply.code(201).send(createSong(p, CreateSong.parse(req.body))));
   app.get('/api/songs/:id', async (req) => songView(IdParam.parse(req.params).id));
+  // "Nova música pelo YouTube" (S14): título e canal do vídeo pelo oEmbed, pra preencher o formulário.
+  app.post('/api/youtube-info', async (req) => {
+    const { url } = z.object({ url: z.string().trim().min(1, 'Cola o link do vídeo') }).parse(req.body);
+    if (!youtubeId(url)) throw new AppError(400, 'Esse link não é de um vídeo do YouTube. Copia o link do vídeo (youtube.com/watch?v=… ou youtu.be/…).');
+    return youtubeInfo(url);
+  });
   app.patch('/api/songs/:id', async (req) => updateSong(p, IdParam.parse(req.params).id, UpdateSong.parse(req.body)));
   app.delete('/api/songs/:id', async (req) => {
     const { id } = IdParam.parse(req.params);
@@ -99,7 +106,8 @@ export async function buildServer(p: Paths, host: Host = { version: '0.0.0' }): 
   app.put('/api/songs/:id/takes/:kind', async (req) => {
     const { id, kind } = KindParam.parse(req.params);
     const offset = z.coerce.number().min(-600000).max(3600000).parse(req.headers['x-offset-ms'] ?? 0);
-    return saveTake(p, id, kind, offset, req.body as Readable);
+    const source = z.enum(TAKE_SOURCES, 'Fonte da gravação: audio ou youtube').parse(req.headers['x-source'] ?? 'audio');
+    return saveTake(p, id, kind, offset, req.body as Readable, source);
   });
   app.patch('/api/songs/:id/takes/:kind', async (req) => {
     const { id, kind } = KindParam.parse(req.params);

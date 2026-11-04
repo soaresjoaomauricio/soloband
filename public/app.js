@@ -164,7 +164,8 @@ async function songsView() {
     }, 3000));
   }
   const row = (s) => {
-    const sound = s.stems.length ? '🎧 MP3 separado' : s.separation.status === 'running' ? 'separando…' : s.original ? 'MP3 sem separar' : 'sem MP3';
+    const audio = s.stems.length ? '🎧 MP3 separado' : s.separation.status === 'running' ? 'separando…' : s.original ? 'MP3 sem separar' : null;
+    const sound = [s.youtube_url ? '🎬 YouTube' : null, audio].filter(Boolean).join(' · ') || 'sem MP3';
     const takes = Object.entries(s.takes)
       .filter(([, t]) => t)
       .map(([k]) => TAKE_LABEL[k])
@@ -173,6 +174,7 @@ async function songsView() {
       <span class="muted">${esc(s.artist)}${s.bpm ? ` · ${s.bpm} bpm` : ''} · ${sound}${s.tab_file ? ' · 🎼 Guitar Pro' : ''}${takes ? ` · Ensaio Atual: ${esc(takes)}` : ''}</span></span></a>`;
   };
   setTimeout(() => {
+    wireNewYoutubeSong(songs);
     const form = document.getElementById('new-song');
     // Escolher o MP3 preenche título, artista e BPM pelas tags; no "Adicionar" ele já sobe e começa a separar.
     let audio = null;
@@ -207,9 +209,17 @@ async function songsView() {
   }, 0);
   return `
     <h1>Músicas</h1>
-    <p class="muted">Põe o MP3 (a tua cópia) e, se tiver, o Guitar Pro. O app separa voz, guitarras, baixo e bateria, e tu toca junto sem a tua parte.</p>
+    <p class="muted">O jeito mais fácil: cola o link do <b>YouTube</b> e toca junto (não baixa nada). Pra tocar <b>sem a tua parte</b>, põe o MP3 (a tua cópia): o app separa voz, guitarras, baixo e bateria. O Guitar Pro, se tiver, mostra a tab andando.</p>
     ${songs.length ? `<div class="setlist" id="setlist">${songs.map(row).join('')}</div>` : '<div class="card first-time"><b>Primeira vez aqui?</b> Dá uma olhada no <a href="#/ajuda">Como usar</a>: são 3 passos.</div>'}
-    <h2>Nova música</h2>
+    <h2>Nova música pelo YouTube</h2>
+    <form id="new-yt" class="card new-song">
+      <input name="url" placeholder="Cola o link do vídeo (youtube.com/watch?v=… ou youtu.be/…)" required>
+      <input name="title" placeholder="Título" required>
+      <input name="artist" placeholder="Artista">
+      <span class="muted" id="new-yt-info">o título e o artista vêm do nome do vídeo: confere antes de adicionar</span>
+      <button class="btn primary">Adicionar</button>
+    </form>
+    <h2>Nova música pelo MP3</h2>
     <form id="new-song" class="card new-song">
       <div class="new-song-file"><label class="btn file-btn">🎧 Escolher MP3<input id="new-audio" type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,audio/*" hidden></label>
         <span class="muted" id="new-audio-name">preenche o nome e o artista sozinho; BPM vazio, ele calcula pela bateria</span></div>
@@ -218,6 +228,55 @@ async function songsView() {
       <input name="bpm" type="number" min="20" max="300" placeholder="BPM">
       <button class="btn primary">Adicionar</button>
     </form>`;
+}
+
+/**
+ * Nova música pelo YouTube (S14): colar o link preenche título e artista pelo nome do vídeo (oEmbed, no servidor);
+ * "Adicionar" usa a música que já existe (só põe o link) ou cadastra, e abre já no YouTube.
+ */
+function wireNewYoutubeSong(songs) {
+  const form = document.getElementById('new-yt');
+  if (!form) return;
+  const info = document.getElementById('new-yt-info');
+  let last = '';
+  const lookup = async () => {
+    const url = form.url.value.trim();
+    if (!url || url === last) return;
+    last = url;
+    info.textContent = 'Lendo o nome do vídeo…';
+    try {
+      const d = await send('/api/youtube-info', 'POST', { url });
+      form.url.value = d.url;
+      last = d.url;
+      if (d.title) form.title.value = d.title;
+      if (d.artist) form.artist.value = d.artist;
+      info.textContent = d.video_title ? `Vídeo: "${d.video_title}"${d.channel ? ` · ${d.channel}` : ''}. Confere o título e o artista.` : 'Não consegui ler o nome do vídeo (sem internet?): escreve o título e o artista.';
+      (form.title.value ? form.artist : form.title).focus();
+    } catch (err) {
+      info.textContent = err.message;
+    }
+  };
+  form.url.addEventListener('change', lookup);
+  form.url.addEventListener('paste', () => setTimeout(lookup, 0));
+  const norm = (x) => String(x ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(form);
+    const btn = form.querySelector('button');
+    btn.disabled = true;
+    try {
+      const artist = f.get('artist') || 'Desconhecido';
+      const existing = songs.find((x) => norm(x.title) === norm(f.get('title')) && norm(x.artist) === norm(artist));
+      const song = existing
+        ? await send(`/api/songs/${encodeURIComponent(existing.id)}`, 'PATCH', { youtube_url: f.get('url') })
+        : await send('/api/songs', 'POST', { title: f.get('title'), artist, youtube_url: f.get('url') });
+      saveStudioPrefs(song.id, { ...studioPrefs(song.id), source: 'youtube' });
+      location.hash = `#/musica/${song.id}`;
+    } catch (err) {
+      toast(err.message);
+      btn.disabled = false;
+    }
+  };
 }
 
 // ---------- Como usar ----------
@@ -240,7 +299,8 @@ async function helpView() {
 
     <h2>Pra cada música</h2>
     ${step('1', 'Cadastrar a música', `
-      <p>Em <a href="#/">Músicas</a>, clica em <b>🎧 Escolher MP3</b>: o título e o artista vêm do arquivo (confere e corrige se precisar). Clica em <b>Adicionar</b> e ele já começa a separar. O BPM, se tu não puser, ele calcula pela bateria.</p>
+      <p><b>Mais fácil:</b> em <a href="#/">Músicas</a>, cola o link do vídeo em <b>Nova música pelo YouTube</b> e clica em <b>Adicionar</b>. Toca na hora, sem baixar nada (precisa de internet). Dá pra tocar mais devagar (0,5× a 1×, sem mudar o tom) e repetir um trecho (A–B). Só não dá pra tirar a tua parte: pra isso é o MP3.</p>
+      <p><b>Pra tocar sem a tua parte:</b> em <a href="#/">Músicas</a>, clica em <b>🎧 Escolher MP3</b>: o título e o artista vêm do arquivo (confere e corrige se precisar). Clica em <b>Adicionar</b> e ele já começa a separar. O BPM, se tu não puser, ele calcula pela bateria.</p>
       <p class="muted">Sem o MP3 na mão? Escreve só o título e adiciona; o arquivo dá pra pôr depois, na música.</p>`)}
     ${step('2', 'Subir os arquivos', `
       <table class="help-files">
@@ -254,7 +314,7 @@ async function helpView() {
         <li>Clica no teu instrumento: <b>🎸 Vou tocar guitarra</b>, <b>🎸 baixo</b>, <b>🥁 bateria</b> ou <b>🎤 Vou cantar</b>. A tua parte fica bem baixinha; o resto toca normal.</li>
         <li>Marca <b>🥢 4 baquetadas</b> pra ter a contagem antes de entrar.</li>
         <li><b>▶ Tocar.</b> Quer mudar alguma faixa? Usa o volume ou o 🔊 dela no <b>Mixer</b>.</li>
-        <li>A <b>🎼 Tab acompanhando</b> anda junto. Se estiver fora do tempo, clica em <b>Achar sozinho</b> ou usa o − / +.</li>
+        <li>A <b>🎼 Tab acompanhando</b> anda junto. Se estiver fora do tempo, clica em <b>Achar sozinho</b> ou usa o − / +. No YouTube: dá play e aperta <b>👆 Marcar o 1</b> quando entrar a 1ª nota.</li>
       </ul>`)}
     ${step('4', 'Gravar por cima (se quiser)', `
       <ol>
@@ -414,6 +474,176 @@ Tuas músicas e gravações NÃO são apagadas: ficam em ${cfg.data_dir}. Se ins
       <div><button id="app-uninstall" class="btn">Desinstalar o SoloBand</button></div></div>`;
 }
 
+// ---------- YouTube (S14, igual ao D73 do Vida de Jão): toca pelo player oficial embutido. O app guarda só o link e nunca baixa. ----------
+
+const ytIdOf = (url) => (url ?? '').match(/[?&]v=([\w-]{11})/)?.[1] ?? null;
+let ytApiPromise = null;
+function loadYouTubeApi() {
+  ytApiPromise ??= new Promise((ok, fail) => {
+    if (window.YT?.Player) return ok(window.YT);
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      prev?.();
+      ok(window.YT);
+    };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => {
+      ytApiPromise = null;
+      s.remove();
+      fail(new Error('Não consegui carregar o player do YouTube (tá sem internet?).'));
+    };
+    document.head.appendChild(s);
+  });
+  return ytApiPromise;
+}
+
+const YT_ERRORS = {
+  2: 'O link do vídeo tá errado.',
+  5: 'O player do YouTube deu erro com esse vídeo.',
+  100: 'Esse vídeo não existe mais ou é privado.',
+  101: 'Esse vídeo não deixa tocar fora do YouTube. Procura outro: o áudio oficial (canal "Artista - Topic") costuma deixar.',
+  150: 'Esse vídeo não deixa tocar fora do YouTube. Procura outro: o áudio oficial (canal "Artista - Topic") costuma deixar.',
+};
+
+/**
+ * O player do YouTube embutido. A posição vem do player só de vez em quando (e meio atrasada), então aqui ela é
+ * estimada pelo relógio desde a última leitura e só é corrigida quando escorrega de verdade (> 0,12 s).
+ */
+class YtPlayer {
+  static async create(box, videoId, { onState, onError } = {}) {
+    const YT = await loadYouTubeApi();
+    const me = new YtPlayer();
+    me.onState = onState;
+    me.onError = onError;
+    const el = box.appendChild(document.createElement('div'));
+    await new Promise((ok) => {
+      me.p = new YT.Player(el, {
+        videoId,
+        width: '100%',
+        height: '100%',
+        playerVars: { playsinline: 1, rel: 0, modestbranding: 1, origin: location.origin },
+        events: {
+          onReady: ok,
+          onStateChange: (e) => me.stateChanged(e.data),
+          onError: (e) => {
+            me.onError?.(YT_ERRORS[e.data] ?? `O YouTube deu erro (${e.data}).`);
+            ok();
+          },
+        },
+      });
+    });
+    me.timer = setInterval(() => me.refresh(), 250);
+    return me;
+  }
+  constructor() {
+    this.state = -1;
+    this.rate = 1;
+    this.anchor = { pos: 0, t: performance.now() };
+  }
+  get playing() {
+    return this.state === 1;
+  }
+  stateChanged(st) {
+    this.state = st;
+    this.anchor = { pos: this.p.getCurrentTime?.() ?? this.anchor.pos, t: performance.now() };
+    this.onState?.(st);
+  }
+  refresh() {
+    if (!this.p?.getCurrentTime) return;
+    const real = this.p.getCurrentTime();
+    if (!this.playing || Math.abs(real - this.position()) > 0.12) this.anchor = { pos: real, t: performance.now() };
+  }
+  position() {
+    return this.playing ? this.anchor.pos + ((performance.now() - this.anchor.t) / 1000) * this.rate : this.anchor.pos;
+  }
+  duration() {
+    return this.p?.getDuration?.() || 0;
+  }
+  play() {
+    this.p?.playVideo?.();
+  }
+  pause() {
+    this.p?.pauseVideo?.();
+  }
+  seek(pos) {
+    this.anchor = { pos, t: performance.now() };
+    this.p?.seekTo?.(pos, true);
+  }
+  setRate(r) {
+    this.anchor = { pos: this.position(), t: performance.now() };
+    this.rate = r;
+    this.p?.setPlaybackRate?.(r);
+  }
+  setVolume(v) {
+    this.p?.setVolume?.(Math.round(Math.max(0, Math.min(1, v)) * 100));
+  }
+  destroy() {
+    clearInterval(this.timer);
+    try {
+      this.p?.destroy();
+    } catch {}
+    this.p = null;
+  }
+}
+
+/** Velocidade + repetir trecho (A–B), iguais no Estúdio e no Ensaio. */
+const YT_RATES = [0.5, 0.75, 0.9, 1];
+function ytPracticeHtml(rate = 1) {
+  return `<div class="yt-practice">
+      <span class="yt-rates" role="group" aria-label="Velocidade">${YT_RATES.map((r) => `<button class="chip ${r === rate ? 'active' : ''}" data-yt-rate="${r}">${String(r).replace('.', ',')}×</button>`).join('')}</span>
+      <span class="yt-loop" title="Marca o começo (A) e o fim (B) do trecho; depois liga o repetir">
+        <button class="chip" data-yt-a>A</button><button class="chip" data-yt-b>B</button><button class="chip" data-yt-loop>🔁 Repetir</button>
+        <span class="muted" data-yt-loop-info>sem trecho</span>
+      </span>
+    </div>`;
+}
+/**
+ * Liga os botões de velocidade e A–B. `ctl` = { position(), seek(pos), setRate(r), canRate?() }.
+ * Devolve `tick()`, que tem que ser chamado umas 5× por segundo (é ele que volta pro A).
+ */
+function wireYtPractice(root, ctl) {
+  const loop = { a: null, b: null, on: false };
+  const info = root.querySelector('[data-yt-loop-info]');
+  const loopBtn = root.querySelector('[data-yt-loop]');
+  const show = () => {
+    info.textContent = loop.a === null ? 'sem trecho' : `${fmtTime(loop.a)} → ${loop.b === null ? '…' : fmtTime(loop.b)}`;
+    loopBtn.classList.toggle('active', loop.on);
+  };
+  root.addEventListener('click', (e) => {
+    const rateBtn = e.target.closest('[data-yt-rate]');
+    if (rateBtn) {
+      if (ctl.canRate && !ctl.canRate()) return;
+      ctl.setRate(Number(rateBtn.dataset.ytRate));
+      root.querySelectorAll('[data-yt-rate]').forEach((b) => b.classList.toggle('active', b === rateBtn));
+    }
+    if (e.target.closest('[data-yt-a]')) {
+      loop.a = ctl.position();
+      if (loop.b !== null && loop.b <= loop.a) loop.b = null;
+      show();
+    }
+    if (e.target.closest('[data-yt-b]')) {
+      const p = ctl.position();
+      if (loop.a === null || p <= loop.a + 0.5) return toast('Marca o A antes, e o B depois dele.');
+      loop.b = p;
+      loop.on = true;
+      show();
+    }
+    if (e.target.closest('[data-yt-loop]')) {
+      if (loop.a === null || loop.b === null) return toast('Marca o A (começo) e o B (fim) do trecho primeiro.');
+      loop.on = !loop.on;
+      if (loop.on) ctl.seek(loop.a);
+      show();
+    }
+  });
+  show();
+  return {
+    tick: () => {
+      if (loop.on && loop.b !== null && ctl.position() >= loop.b) ctl.seek(loop.a);
+    },
+  };
+}
+
 // ---------- Estúdio (vindo do Vida de Jão): mixer, separação, tab acompanhando e gravar por cima. ----------
 
 const STEM_LABEL = { vocals: '🎤 Voz', guitar: '🎸 Guitarras (violão + guitarra)', bass: 'Baixo', drums: 'Bateria', piano: 'Teclado', other: 'Outros' };
@@ -486,6 +716,7 @@ class Mixer {
     this.playing = true;
     this.startPos = pos;
     this.startedAt = when;
+    this.started = { pos, at: when }; // onde e quando a música saiu de verdade (a gravação conta daqui)
     this.onPlay?.(pos, when);
     clearTimeout(this.endTimer);
     this.endTimer = setTimeout(() => this.playing && this.position() >= this.duration() - 0.05 && (this.pause(), this.onEnd?.()), (when - this.ctx.currentTime + this.duration() - pos) * 1000 + 300);
@@ -536,6 +767,127 @@ class Mixer {
   close() {
     this.stopSources();
     this.ctx.close();
+  }
+}
+
+/**
+ * O mixer do Estúdio com o YouTube no lugar das faixas (S14). A música é o vídeo (não dá pra mexer no som dele,
+ * só no volume); as gravações do João tocam no Web Audio, começando quando o YouTube começa de verdade.
+ * Quem usa (tab, gravação) vê a mesma cara do Mixer: position(), playing, play(), pause(), seek(), started.
+ */
+class YtMixer extends Mixer {
+  constructor(yt) {
+    super();
+    this.yt = yt;
+    this.rate = 1;
+    this.stalls = 0; // quantas vezes o YouTube parou pra carregar tocando (a gravação pode ter escorregado)
+    yt.onState = (st) => this.ytState(st);
+  }
+  position() {
+    return this.yt.position();
+  }
+  duration() {
+    return this.yt.duration() || super.duration();
+  }
+  /** Pausa o vídeo no ponto, toca as baquetadas e solta o vídeo no tempo seguinte. Devolve quando ele deve sair. */
+  play(pos = this.position(), countIn = null) {
+    this.stopSources();
+    clearTimeout(this.startTimer);
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    const first = this.ctx.currentTime + 0.12;
+    const beat = countIn ? 60 / countIn.bpm : 0;
+    for (let i = 0; i < (countIn?.beats ?? 0); i++) this.sources.push(this.stick(first + i * beat));
+    const when = first + (countIn?.beats ?? 0) * beat;
+    this.playing = true;
+    this.startPos = pos;
+    this.started = null; // só vale quando o YouTube avisar que saiu
+    if (countIn) {
+      this.waiting = true; // contando: o "pausou" que o YouTube manda agora não é o João pausando
+      this.yt.pause();
+      this.yt.seek(pos);
+      // O YouTube leva ~0,1 s pra sair depois do play: manda um tiquinho antes do tempo.
+      this.startTimer = setTimeout(() => {
+        this.waiting = false;
+        if (this.playing) this.yt.play();
+      }, Math.max(0, (when - this.ctx.currentTime - 0.1) * 1000));
+    } else {
+      this.waiting = false;
+      if (Math.abs(this.yt.position() - pos) > 0.05) this.yt.seek(pos);
+      this.yt.play();
+    }
+    return when;
+  }
+  ytState(st) {
+    if (st === 1) {
+      // Saiu: as gravações entram agora, do ponto em que o vídeo tá.
+      const pos = this.yt.position();
+      if (this.playing && this.started) this.stalls++;
+      this.playing = true;
+      this.startPos = pos;
+      this.startedAt = this.ctx.currentTime;
+      this.started = { pos, at: this.ctx.currentTime };
+      this.startTakes(pos);
+      this.onPlay?.(pos, this.ctx.currentTime);
+    } else if (st === 3) {
+      this.stopSources(); // carregando: as gravações esperam o vídeo voltar
+    } else if (st === 2 && this.playing && !this.waiting) {
+      // Pausou pelo próprio player (clique no vídeo) ou pelo nosso pause.
+      if (this.yt.position() < this.duration() - 0.3) this.pause(true);
+    } else if (st === 0 && this.playing) {
+      this.pause(true);
+      this.onEnd?.();
+    }
+  }
+  startTakes(pos) {
+    this.stopSources();
+    if (this.rate !== 1) return; // em outra velocidade o YouTube toca mais devagar e a gravação não acompanha
+    const when = this.ctx.currentTime + 0.01;
+    for (const t of this.tracks.values()) {
+      const rel = pos - t.offset;
+      if (rel >= t.buffer.duration) continue;
+      const src = this.ctx.createBufferSource();
+      src.buffer = t.buffer;
+      src.connect(t.gain);
+      src.start(when + Math.max(0, -rel), Math.max(0, rel));
+      this.sources.push(src);
+    }
+  }
+  pause(fromPlayer = false) {
+    clearTimeout(this.startTimer);
+    this.waiting = false;
+    this.playing = false;
+    this.startPos = this.position();
+    this.stopSources();
+    if (!fromPlayer) this.yt.pause();
+    this.onPause?.();
+  }
+  seek(pos) {
+    if (this.playing) return this.play(pos);
+    this.startPos = pos;
+    this.yt.seek(pos);
+    this.onPause?.();
+  }
+  add(id, buffer, opts) {
+    super.add(id, buffer, opts);
+    if (this.playing && this.yt.playing) this.startTakes(this.position());
+  }
+  set(id, patch) {
+    const t = this.tracks.get(id);
+    if (!t) return;
+    Object.assign(t, patch);
+    this.apply(id);
+    if ('offset' in patch && this.playing && this.yt.playing) this.startTakes(this.position());
+  }
+  setRate(r) {
+    this.rate = r;
+    this.yt.setRate(r);
+    if (this.playing && this.yt.playing) this.startTakes(this.position());
+  }
+  close() {
+    clearTimeout(this.startTimer);
+    super.close();
+    this.yt.onState = null;
+    this.yt.destroy();
   }
 }
 
@@ -781,10 +1133,29 @@ async function mountStudioTab(songId, box, mixer, getOffset, trackIndex) {
   const START_LAG_MS = 70;
   // Pausar e mandar pular logo em seguida faz o alphaTab voltar pro começo: espera ele assentar antes de pular.
   const SETTLE_MS = 160;
+  // Fora de 1× (YouTube mais devagar) o player do alphaTab não acompanha a velocidade: aí ele fica parado e o
+  // cursor é levado na mão, 12× por segundo, pro ponto em que o vídeo tá (e rola quando muda de compasso).
+  let speed = 1;
+  let follow = 0;
+  const followVideo = () => {
+    clearInterval(follow);
+    let bar = '';
+    follow = setInterval(() => {
+      if (!mixer.playing || gpMs() < 0) return;
+      tabApi.timePosition = gpMs();
+      const now = box.querySelector('.at-cursor-bar')?.style.transform ?? '';
+      if (now !== bar) {
+        bar = now;
+        tabApi.scrollToCursor();
+      }
+    }, 80);
+  };
   const sync = (pos, when) => {
     clearTimeout(startTimer);
     clearTimeout(settleTimer);
+    clearInterval(follow);
     tabApi.pause();
+    if (speed !== 1) return void (settleTimer = setTimeout(followVideo, SETTLE_MS));
     const gp = (pos - getOffset()) * 1000;
     // Espera o som sair (0,12 s + baquetadas) e, se ainda não chegou no compasso 1, mais o que falta.
     const wait = Math.max(SETTLE_MS, Math.max(0, when - mixer.ctx.currentTime) * 1000 + Math.max(0, -gp) - START_LAG_MS);
@@ -797,22 +1168,25 @@ async function mountStudioTab(songId, box, mixer, getOffset, trackIndex) {
   mixer.onPlay = sync;
   mixer.onPause = () => {
     clearTimeout(startTimer);
+    clearInterval(follow);
     tabApi.pause();
     settleTimer = setTimeout(() => (tabApi.timePosition = Math.max(0, gpMs())), SETTLE_MS);
   };
   // Confere com o relógio do mixer; escorregou mais de 40 ms, acerta (pulando enquanto toca, que não dá problema).
   const drift = setInterval(() => {
-    if (!mixer.playing || gpMs() < 0 || tabApi.playerState !== 1) return;
+    if (speed !== 1 || !mixer.playing || gpMs() < 0 || tabApi.playerState !== 1) return;
     if (Math.abs(tabApi.timePosition - gpMs()) > 40) tabApi.timePosition = gpMs();
   }, 1000);
   return {
     api: tabApi,
     setTrack: (i) => tabApi.renderScore(score, [i]),
+    setSpeed: (r) => (speed = r),
     resync: () => (mixer.playing ? sync(mixer.position(), mixer.ctx.currentTime) : mixer.onPause()),
     destroy: () => {
       clearTimeout(startTimer);
       clearTimeout(settleTimer);
       clearInterval(drift);
+      clearInterval(follow);
       mixer.onPlay = mixer.onPause = null;
       tabApi.destroy();
     },
@@ -864,15 +1238,17 @@ async function studioSongView(ref) {
   const { song: s, state } = d;
   const sep = state.separation;
   // Qual som da banda: o que o João escolheu; senão o MP3 se já tá separado; senão o Guitar Pro.
-  const has = { gp: d.tab_available, mp3: state.stems.length > 0 };
+  const has = { gp: d.tab_available, mp3: state.stems.length > 0, youtube: Boolean(ytIdOf(s.youtube_url)) };
   const wanted = studioPrefs(s.url_slug).source;
-  const source = has[wanted] ? wanted : has.mp3 ? 'mp3' : has.gp ? 'gp' : null;
+  const source = has[wanted] ? wanted : has.mp3 ? 'mp3' : has.youtube ? 'youtube' : has.gp ? 'gp' : null;
   const fileInput = '<input id="st-file" type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,audio/*" hidden>';
   // Log do separador (o que ele tá fazendo, ou onde parou), fechado por padrão.
   const sepLog = d.sep_log?.lines.length
     ? `<details class="sep-log"><summary>Ver log</summary><pre class="log" id="st-log">${esc(d.sep_log.lines.join('\n'))}</pre></details>`
     : '';
-  const mp3Card = !state.original
+  const mp3Card = !state.original && has.youtube
+    ? `<p class="muted studio-src-line">Quer tirar a tua parte (volume por instrumento)? Só com o MP3 separado: <label class="link-btn file-btn">pôr o MP3${fileInput}</label> (a tua cópia).</p>`
+    : !state.original
     ? `<div class="card studio-source">
          <p><b>Põe o MP3 da música</b> (ou m4a do iTunes, wav, flac: a tua cópia). O app separa voz, guitarras, baixo e bateria sozinho, em menos de 1 minuto.</p>
          <label class="btn primary file-btn">Escolher arquivo${fileInput}</label>
@@ -888,7 +1264,12 @@ async function studioSongView(ref) {
     <div class="seg" role="group" aria-label="Som da banda">
       <button class="${source === 'gp' ? 'active' : ''}" data-src="gp" ${has.gp ? '' : 'disabled'}>🎼 Usar Guitar Pro<span>${has.gp ? 'som do arquivo da tab, sem voz' : 'essa música não tem arquivo Guitar Pro'}</span></button>
       <button class="${source === 'mp3' ? 'active' : ''}" data-src="mp3" ${has.mp3 ? '' : 'disabled'}>🎧 Usar MP3<span>${has.mp3 ? 'a música de verdade, separada' : sep.status === 'running' ? 'separando…' : 'ainda sem MP3'}</span></button>
+      <button class="${source === 'youtube' ? 'active' : ''}" data-src="youtube" ${has.youtube ? '' : 'disabled'}>🎬 Usar YouTube<span>${has.youtube ? 'o vídeo, sem baixar nada (precisa de internet)' : 'cola o link do vídeo aqui embaixo'}</span></button>
     </div>`;
+  const ytLine = has.youtube
+    ? `<p class="muted studio-src-line">🎬 <a href="${esc(s.youtube_url)}" target="_blank" rel="noopener">vídeo no YouTube ↗</a> <button class="link-btn" id="st-yt-edit">trocar o link</button></p>
+       <form id="st-yt-form" class="yt-link-form" hidden><input name="url" placeholder="Link do vídeo no YouTube" value="${esc(s.youtube_url)}"><button class="btn small primary">Salvar</button><button type="button" class="btn small" id="st-yt-clear">Tirar</button></form>`
+    : `<form id="st-yt-form" class="card yt-link-form"><b>🎬 Tocar pelo YouTube</b><input name="url" placeholder="Cola o link do vídeo (youtube.com/watch?v=… ou youtu.be/…)"><button class="btn small primary">Salvar</button></form>`;
   setTimeout(() => {
     for (const b of document.querySelectorAll('[data-src]')) {
       b.onclick = () => {
@@ -897,6 +1278,7 @@ async function studioSongView(ref) {
       };
     }
     wireStudioSource(d);
+    wireYoutubeLink(d);
     if (source) mountStudio(d, source).catch((e) => toast(e.message));
   }, 0);
   return `
@@ -905,9 +1287,11 @@ async function studioSongView(ref) {
     <div class="muted">${esc(s.artist)}${s.tuning && s.tuning !== 'E padrão' ? ` · ${esc(s.tuning)}` : ''}${s.bpm ? ` · ${s.bpm} bpm` : ''}</div>
     <h2>Som da banda</h2>
     ${sourcePicker}
+    ${ytLine}
     ${mp3Card}
     <p class="muted studio-src-line">${d.tab_available ? 'Guitar Pro na música.' : 'Sem Guitar Pro.'} <label class="link-btn file-btn">${d.tab_available ? 'Trocar o Guitar Pro' : 'Pôr o Guitar Pro (.gp)'}<input id="st-gp" type="file" accept=".gp,.gp3,.gp4,.gp5,.gpx,.gp7" hidden></label> <span class="muted">· ou baixa na pasta vigiada que ele entra sozinho</span></p>
-    <div id="st-main" class="studio-main">${source ? '<p class="muted" id="st-loading">Carregando as faixas…</p>' : '<p class="empty">Sem som da banda ainda: põe o MP3 aí em cima.</p>'}</div>`;
+    ${source === 'youtube' ? '<div class="card yt-card studio-yt"><div class="yt-frame" id="st-yt"></div><p class="muted yt-msg" id="st-yt-msg"></p></div>' : ''}
+    <div id="st-main" class="studio-main">${source ? `<p class="muted" id="st-loading">${source === 'youtube' ? 'Abrindo o YouTube…' : 'Carregando as faixas…'}</p>` : '<p class="empty">Sem som da banda ainda: cola o link do YouTube ou põe o MP3 aí em cima.</p>'}</div>`;
 }
 
 /** Manda o áudio da música (já começa a separar). Devolve false se deu erro (o aviso já apareceu). */
@@ -934,6 +1318,32 @@ async function uploadAudio(slug, file) {
   }
   saveStudioPrefs(slug, { ...studioPrefs(slug), source: 'mp3' });
   return true;
+}
+
+/** Link do YouTube da música: colar, trocar ou tirar. */
+function wireYoutubeLink(d) {
+  const form = document.getElementById('st-yt-form');
+  if (!form) return;
+  const save = async (url) => {
+    try {
+      await send(`/api/songs/${encodeURIComponent(d.song.url_slug)}`, 'PATCH', { youtube_url: url });
+    } catch (err) {
+      return toast(err.message);
+    }
+    if (url) saveStudioPrefs(d.song.url_slug, { ...studioPrefs(d.song.url_slug), source: 'youtube' });
+    toast(url ? 'Link do YouTube salvo.' : 'Link do YouTube tirado.');
+    render();
+  };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const url = form.url.value.trim();
+    if (url) save(url);
+  };
+  document.getElementById('st-yt-edit')?.addEventListener('click', () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) form.url.select();
+  });
+  document.getElementById('st-yt-clear')?.addEventListener('click', () => save(null));
 }
 
 /** Upload do MP3 e acompanhamento da separação. */
@@ -993,8 +1403,17 @@ async function mountStudio(d, source) {
   const main = document.getElementById('st-main');
   if (!main) return;
   const slug = s.url_slug;
-  const mixer = new Mixer();
-  const session = (studioSession = { mixer, recorder: null, slug });
+  const yt = source === 'youtube';
+  const session = (studioSession = { mixer: null, recorder: null, slug });
+  let mixer;
+  if (yt) {
+    // YouTube (S14): o vídeo é o som da banda; o player fica fora do #st-main (que é redesenhado aqui embaixo).
+    const msg = document.getElementById('st-yt-msg');
+    const player = await YtPlayer.create(document.getElementById('st-yt'), ytIdOf(s.youtube_url), { onError: (m) => (msg.textContent = m) });
+    if (studioSession !== session) return player.destroy();
+    mixer = new YtMixer(player);
+  } else mixer = new Mixer();
+  session.mixer = mixer;
   const prefs = studioPrefs(slug);
   // Volume é por fonte: "guitarras" do MP3 e as faixas do Guitar Pro não se misturam.
   prefs[source] ??= {};
@@ -1016,15 +1435,25 @@ async function mountStudio(d, source) {
             return { id, label: STEM_LABEL[id] ?? id, buffer };
           }),
         )
-      : await midiStems(s.id, mixer.ctx, loading);
+      : source === 'gp'
+        ? await midiStems(s.id, mixer.ctx, loading)
+        : [];
   if (studioSession !== session) return mixer.close();
   const vol = (id, def = 1) => vols[id]?.v ?? def;
   const muted = (id) => vols[id]?.m ?? false;
   for (const t of tracks) mixer.add(t.id, t.buffer, { volume: vol(t.id), muted: muted(t.id) });
+  if (yt) mixer.yt.setVolume(vol('yt'));
+  // Gravação feita em cima do YouTube só toca junto do YouTube (o tempo do vídeo não é o do MP3), e vice-versa.
+  const takeSource = yt ? 'youtube' : 'audio';
   const takes = {};
+  const otherTakes = [];
   for (const kind of ['guitar', 'bass', 'vocal']) {
     const tk = state.takes[kind];
     if (!tk) continue;
+    if ((tk.source ?? 'audio') !== takeSource) {
+      otherTakes.push(kind);
+      continue;
+    }
     takes[kind] = tk;
     mixer.add(`take:${kind}`, await decode(`${base}/gravacoes/${tk.file}`), { offset: (tk.offset_ms + tk.nudge_ms) / 1000, volume: vol(`take:${kind}`), muted: muted(`take:${kind}`) });
   }
@@ -1065,6 +1494,7 @@ async function mountStudio(d, source) {
       <button id="st-stop" class="btn">⏹</button>
       <input id="st-seek" type="range" min="0" max="${Math.ceil(mixer.duration())}" step="0.1" value="0" aria-label="Posição">
       <span id="st-time" class="mono">0:00 / ${fmtTime(mixer.duration())}</span>
+      ${yt ? ytPracticeHtml() : ''}
       <label class="countin" title="4 batidas no tempo da música antes de entrar (no play e no gravar)">
         <input type="checkbox" id="st-count" ${prefs.countIn ? 'checked' : ''}> 🥢 4 baquetadas
         <input type="number" id="st-bpm" min="40" max="240" value="${prefs.bpm ?? s.bpm ?? 100}" aria-label="BPM"> bpm
@@ -1077,19 +1507,25 @@ async function mountStudio(d, source) {
         <label>Faixa <select id="st-tab-track">${d.tab_tracks.map((n, i) => `<option value="${i}" ${i === (prefs.tabTrack ?? d.tab_track) ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
         ${source === 'mp3' ? `<span class="nudge" title="Onde o compasso 1 da tab cai no MP3">Compasso 1 em <button data-tab-off="-50">−</button><b id="st-tab-off">${(state.tab_offset_ms / 1000).toFixed(2).replace('.', ',')} s</b><button data-tab-off="50">+</button></span>` : ''}
         ${source === 'mp3' ? '<button id="st-align" class="btn small">Achar sozinho</button>' : ''}
-        <span class="muted note">${source === 'mp3' && state.tab_offset_note ? esc(state.tab_offset_note) : ''}</span>
+        ${yt ? `<span class="nudge" title="Onde o compasso 1 da tab cai no vídeo">Compasso 1 em <button data-tab-off="-50">−</button><b id="st-tab-off">${((state.youtube_offset_ms ?? 0) / 1000).toFixed(2).replace('.', ',')} s</b><button data-tab-off="50">+</button></span>
+          <button id="st-tap" class="btn small" title="Dá play e aperta bem quando entra a 1ª nota da música">👆 Marcar o 1</button>` : ''}
+        <span class="muted note">${source === 'mp3' && state.tab_offset_note ? esc(state.tab_offset_note) : yt ? esc(state.youtube_offset_note ?? (state.youtube_offset_ms ? '' : 'dá play e aperta o 👆 na 1ª nota')) : ''}</span>
       </div>
       <div id="st-tab" class="tab-box studio-tab-box"></div>
     </details>` : ''}
-    <div class="chips studio-presets">
+    ${yt ? '' : `<div class="chips studio-presets">
       <button class="chip" data-preset="guitar">🎸 Vou tocar guitarra/violão</button>
       <button class="chip" data-preset="bass">🎸 Vou tocar baixo</button>
       <button class="chip" data-preset="drums">🥁 Vou tocar bateria</button>
       <button class="chip" data-preset="vocal">🎤 Vou cantar</button>
       <button class="chip" data-preset="all">Tudo normal</button>
-    </div>
-    <h2>Mixer <span class="muted">· ${source === 'gp' ? '🎼 som do Guitar Pro' : '🎧 MP3 separado'}</span></h2>
+    </div>`}
+    <h2>Mixer <span class="muted">· ${source === 'gp' ? '🎼 som do Guitar Pro' : yt ? '🎬 YouTube' : '🎧 MP3 separado'}</span></h2>
     <div class="card mixer-card">
+      ${yt ? `<div class="mix-row" data-yt-row><span></span><span class="mix-name">🎬 Vídeo do YouTube</span>
+          <input type="range" min="0" max="100" step="5" value="${Math.round(vol('yt') * 100)}" data-yt-vol aria-label="Volume do YouTube"><b class="mix-val" data-yt-val>${Math.round(vol('yt') * 100)}%</b></div>
+        <p class="muted mix-note">No YouTube não dá pra separar os instrumentos: pra tirar a tua parte, usa o MP3.</p>` : ''}
+      ${otherTakes.length ? `<p class="muted mix-note">${otherTakes.map((k) => TAKE_LABEL[k]).join(' e ')}: gravado em cima ${yt ? 'do MP3/Guitar Pro' : 'do YouTube'}, só toca junto ${yt ? 'deles' : 'dele'}. Gravar aqui substitui.</p>` : ''}
       ${tracks.map((t) => rowHtml(t.id, t.label)).join('')}
       <div id="st-take-rows">${takeRows()}</div>
       <div id="st-new-row"></div>
@@ -1121,7 +1557,20 @@ async function mountStudio(d, source) {
     </div>`;
 
   // Tab acompanhando: no MP3 começa depois da espera da música; no Guitar Pro, junto (é o mesmo arquivo).
-  let tabOffset = source === 'mp3' ? state.tab_offset_ms / 1000 : 0;
+  let tabOffset = source === 'mp3' ? state.tab_offset_ms / 1000 : yt ? (state.youtube_offset_ms ?? 0) / 1000 : 0;
+  const offsetField = yt ? 'youtube_offset' : 'tab_offset';
+  const saveOffset = (note) => {
+    clearTimeout(session.offTimer);
+    session.offTimer = setTimeout(
+      () =>
+        fetch(`/api/songs/${encodeURIComponent(slug)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ [`${offsetField}_ms`]: Math.round(tabOffset * 1000), [`${offsetField}_note`]: note }),
+        }),
+      600,
+    );
+  };
   const tabBox = document.getElementById('st-tab');
   if (tabBox) {
     mountStudioTab(s.id, tabBox, mixer, () => tabOffset, prefs.tabTrack ?? d.tab_track ?? 0)
@@ -1159,16 +1608,16 @@ async function mountStudio(d, source) {
       tabOffset = Math.max(0, tabOffset + Number(b.dataset.tabOff) / 1000);
       document.getElementById('st-tab-off').textContent = `${tabOffset.toFixed(2).replace('.', ',')} s`;
       session.tab?.resync();
-      clearTimeout(session.offTimer);
-      session.offTimer = setTimeout(
-        () =>
-          fetch(`/api/songs/${encodeURIComponent(slug)}`, {
-            method: 'PATCH',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ tab_offset_ms: Math.round(tabOffset * 1000), tab_offset_note: 'ajustado à mão' }),
-          }),
-        600,
-      );
+      saveOffset('ajustado à mão');
+    });
+    // YouTube: não dá pra analisar o áudio do vídeo, então a pessoa marca. Desconta uns 0,1 s do tempo de reação.
+    document.getElementById('st-tap')?.addEventListener('click', () => {
+      if (!mixer.playing) return toast('Dá play primeiro e aperta bem quando entrar a 1ª nota.');
+      tabOffset = Math.max(0, mixer.position() - 0.1 * mixer.rate);
+      document.getElementById('st-tab-off').textContent = `${tabOffset.toFixed(2).replace('.', ',')} s`;
+      main.querySelector('.studio-tab-bar .note').textContent = 'marcado na mão (− / + pra acertar)';
+      session.tab?.resync();
+      saveOffset('marcado na mão');
     });
   }
 
@@ -1187,6 +1636,14 @@ async function mountStudio(d, source) {
     m.textContent = t.muted ? '🔇' : '🔊';
   };
   main.addEventListener('input', (e) => {
+    if (e.target.matches('[data-yt-vol]')) {
+      const v = Number(e.target.value) / 100;
+      mixer.yt.setVolume(v);
+      vols.yt = { v, m: false };
+      savePrefs();
+      main.querySelector('[data-yt-val]').textContent = `${Math.round(v * 100)}%`;
+      return;
+    }
     const row = e.target.closest('.mix-row');
     if (row && e.target.matches('[data-vol]')) setTrack(row.dataset.id, { volume: Number(e.target.value) / 100 });
   });
@@ -1265,10 +1722,27 @@ async function mountStudio(d, source) {
   };
   seek.oninput = () => !session.recording && mixer.seek(Number(seek.value));
   mixer.onEnd = () => (session.recording ? stopRecording() : showPlay());
+  // YouTube: velocidade (o tom não muda) e repetir trecho. Em outra velocidade a gravação não acompanha.
+  const practice = yt
+    ? wireYtPractice(main.querySelector('.transport'), {
+        position: () => mixer.position(),
+        seek: (p) => !session.recording && mixer.seek(p),
+        setRate: (r) => {
+          mixer.setRate(r);
+          session.tab?.setSpeed(r);
+          session.tab?.resync();
+        },
+        canRate: () => (session.recording ? (toast('Gravando: a velocidade fica em 1×.'), false) : true),
+      })
+    : null;
   session.timer = setInterval(() => {
+    practice?.tick();
     const p = mixer.position();
+    const dur = mixer.duration();
+    if (Number(seek.max) !== Math.ceil(dur)) seek.max = Math.ceil(dur);
     if (document.activeElement !== seek) seek.value = p;
-    time.textContent = `${fmtTime(p)} / ${fmtTime(mixer.duration())}`;
+    time.textContent = `${fmtTime(p)} / ${fmtTime(dur)}`;
+    if (yt) showPlay(); // dá pra pausar/tocar pelo próprio vídeo
   }, 200);
 
   // Gravação.
@@ -1358,6 +1832,7 @@ async function mountStudio(d, source) {
   for (const el of [devSel, chSel]) el.addEventListener('change', () => session.recorder?.monitorOn && openInput());
 
   async function startRecording() {
+    if (yt && mixer.rate !== 1) return toast('Pra gravar, volta a velocidade pra 1×.');
     if (!(await unlockInputs())) return;
     if (!(await openInput())) return;
     session.recorder.onLevel = (peak) => (meter.style.width = `${Math.min(100, peak * 100)}%`);
@@ -1365,7 +1840,7 @@ async function mountStudio(d, source) {
     if (takes[kind]) setTrack(`take:${kind}`, { muted: true }); // não grava ouvindo a gravação antiga da mesma coisa
     mixer.remove('new');
     document.getElementById('st-new-row').innerHTML = '';
-    session.recording = { kind, startPos: mixer.position() };
+    session.recording = { kind, startPos: mixer.position(), stalls: mixer.stalls ?? 0 };
     session.recorder.start();
     session.recording.when = mixer.play(session.recording.startPos, countIn());
     recBtn.textContent = '⏹ Parar gravação';
@@ -1388,12 +1863,15 @@ async function mountStudio(d, source) {
     // Onde a 1ª amostra cai na música: o que o João ouviu saiu atrasado (saída) e o que ele tocou chegou atrasado (entrada).
     // + o "Sync" que o João calibrou pro headset dele (o navegador nem sempre sabe o atraso certo).
     const latency = mixer.outputLatency() + session.recorder.inputLatency() + loadStudioSync() / 1000;
-    const offset = rec.startPos + (firstT - rec.when) - latency;
+    // `started` = onde e quando a música saiu de verdade (no YouTube, quando o vídeo avisou que começou).
+    const st = mixer.started ?? { pos: rec.startPos, at: rec.when };
+    const offset = st.pos + (firstT - st.at) - latency;
+    const slipped = yt && (mixer.stalls ?? 0) > rec.stalls;
     const buffer = mixer.ctx.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples, 0);
     mixer.add('new', buffer, { offset });
     session.newTake = { kind: rec.kind, samples, sampleRate, offset };
-    status.textContent = `Gravado: ${fmtTime(samples.length / sampleRate)}. Atraso descontado: ${Math.round(latency * 1000)} ms.`;
+    status.textContent = `Gravado: ${fmtTime(samples.length / sampleRate)}. Atraso descontado: ${Math.round(latency * 1000)} ms.${slipped ? ' ⚠️ O YouTube parou pra carregar no meio: depois desse ponto a gravação pode ter saído fora do tempo.' : ''}`;
     document.getElementById('st-new-row').innerHTML = `${rowHtml('new', `⏺ Gravação nova (${{ guitar: 'guitarra', bass: 'baixo', vocal: 'voz' }[rec.kind]}, não salva)`)}
       <div class="new-actions">
         <button id="st-listen" class="btn">▶ Ouvir junto</button>
@@ -1415,7 +1893,7 @@ async function mountStudio(d, source) {
       const t = session.newTake;
       const res = await fetch(`/api/songs/${encodeURIComponent(slug)}/takes/${t.kind}`, {
         method: 'PUT',
-        headers: { 'content-type': 'audio/wav', 'x-offset-ms': String(Math.round(t.offset * 1000)) },
+        headers: { 'content-type': 'audio/wav', 'x-offset-ms': String(Math.round(t.offset * 1000)), 'x-source': takeSource },
         body: wavBlob(t.samples, t.sampleRate),
       });
       if (!res.ok) {

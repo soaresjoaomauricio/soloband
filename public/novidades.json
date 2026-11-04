@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.1.5",
+    "date": "2026-11-04",
+    "items": [
+      "**Tocar pelo YouTube, sem baixar nada:** em Músicas, cola o link do vídeo em **Nova música pelo YouTube** (o título e o artista vêm do nome do vídeo). Numa música que já existe, cola o link na tela dela. Aí escolhe **🎬 Usar YouTube** no Som da banda. Precisa de internet.",
+      "No YouTube dá pra tocar **mais devagar** (0,5×, 0,75×, 0,9×, sem mudar o tom) e **repetir um trecho** (marca o A e o B e liga o 🔁).",
+      "A **tab anda junto** do vídeo, até devagar. Pra acertar onde ela começa: dá play e aperta **👆 Marcar o 1** quando entrar a 1ª nota (o − / + acerta o resto).",
+      "Dá pra **gravar por cima** do YouTube também. A gravação feita em cima do vídeo toca junto do vídeo; a do MP3, junto do MP3.",
+      "O YouTube **não separa os instrumentos**: pra tocar sem a tua parte (volume por faixa), continua o MP3."
+    ]
+  },
+  {
     "version": "0.1.4",
     "date": "2026-10-29",
     "items": [

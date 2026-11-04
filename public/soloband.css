@@ -28,3 +28,20 @@ code { background: var(--bg); padding: 1px 6px; border-radius: 6px; }
 .sep-log summary { cursor: pointer; color: var(--muted, inherit); font-size: 0.9rem; }
 .sep-log pre.log { margin: 6px 0 0; }
 .new-song-file { flex-basis: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* YouTube (S14): o vídeo embutido, velocidade e repetir trecho. */
+.yt-card { padding: 10px; }
+.yt-frame { position: relative; width: 100%; max-width: 720px; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; }
+.yt-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.yt-msg { margin: 6px 0 0; }
+.yt-msg:empty { display: none; }
+.yt-practice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; width: 100%; }
+.yt-rates, .yt-loop { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.yt-practice .chip { cursor: pointer; font: inherit; background: var(--surface); color: var(--muted); border: 1px solid var(--line); }
+.yt-practice .chip.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.yt-link-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.yt-link-form[hidden] { display: none; }
+.yt-link-form input { flex: 1; min-width: 220px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+.mix-note { margin: 6px 0; font-size: 0.85rem; }
+button.link-btn { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+.new-song input[name='url'], #new-yt-info { flex-basis: 100%; }
